@@ -404,8 +404,6 @@ public class NioFileManagerImpl implements NioFileManager {
         // Validate input to prevent null pointer exceptions
         if (fileName == null || fileName.trim().isEmpty()) {
             log.error("Invalid fileName provided: null or empty");
-            return false;
-        }
 
         // Deleting an existing cache entry must target the caller's exact filename, so validate it as
         // a single path component (no normalization). An invalid (non-blank) name fails loudly here —
