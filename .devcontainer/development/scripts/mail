@@ -191,6 +191,7 @@ report_send_mode() {
 case "$command" in
     start)
       echo "Starting Postfix..."
+      ensure_capture_file
       configure_send_mode
       service postfix start
       # `service postfix start` is intentionally a no-op if Postfix is already
@@ -219,6 +220,7 @@ case "$command" in
     ;;
     restart)
       echo "Restarting Postfix..."
+      ensure_capture_file
       configure_send_mode
       service postfix restart
       echo "Capture file: $CAPTURE_FILE"
@@ -255,6 +257,8 @@ case "$command" in
         flock 9
         ensure_capture_file_locked skip-repair
         : > "$CAPTURE_FILE"
+        # Remove leftovers from images built before the private spool existed.
+        find "$CAPTURE_DIR" -maxdepth 1 -type f -name '.raw-message.*' -delete
         find "$CAPTURE_SPOOL_DIR" -maxdepth 1 -type f -name '.raw-message.*' -delete
         chown "$CAPTURE_USER:$CAPTURE_GROUP" "$CAPTURE_FILE"
         chmod 0660 "$CAPTURE_FILE"

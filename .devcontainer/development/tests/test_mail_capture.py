@@ -432,6 +432,7 @@ class MailCaptureTest(unittest.TestCase):
         self.assertNotIn(b"source-only@example", result.stdout)
 
     def test_start_reloads_an_already_running_postfix_instance(self) -> None:
+        self.capture_file.unlink()
         fake_binary_directory = self.capture_directory / "start-bin"
         fake_binary_directory.mkdir()
         service_log = self.capture_directory / "service.log"
@@ -461,6 +462,8 @@ class MailCaptureTest(unittest.TestCase):
             service_log.read_text().splitlines(),
             ["postfix start", "postfix reload"],
         )
+        self.assertTrue(self.capture_file.is_file())
+        self.assertEqual(stat.S_IMODE(self.capture_file.stat().st_mode), 0o660)
 
     def test_relayhost_is_applied_to_bare_smtp_allowlist_entries(self) -> None:
         self.send_allowlist.write_text(
