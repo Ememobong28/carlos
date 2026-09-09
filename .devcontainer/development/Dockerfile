@@ -213,6 +213,11 @@ RUN printf '%s\n' \
     '# /^me@my-test-inbox\.example\.com$/  smtp:' \
     > /etc/postfix/carlos-send-allowlist
 
+# `mail start` renders the user-maintained allowlist above into this runtime
+# transport map, adding CARLOS_MAIL_RELAYHOST to bare `smtp:` results.
+RUN install -o root -g root -m 0644 /dev/null \
+    /etc/postfix/carlos-send-allowlist.effective
+
 # Configure Postfix for localhost-only operation with capture-everything delivery.
 RUN postconf -e 'myhostname=openo-dev.local' && \
     postconf -e 'mydestination=openo-dev.local, localhost' && \

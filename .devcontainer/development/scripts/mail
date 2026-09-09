@@ -9,8 +9,9 @@ CAPTURE_LOCK="${CARLOS_MAIL_CAPTURE_LOCK:-$CAPTURE_DIR/.lock}"
 CAPTURE_INBOX="${CARLOS_MAIL_CAPTURE_INBOX:-/scripts/mail-capture-inbox}"
 CAPTURE_USER="${CARLOS_MAIL_CAPTURE_USER:-carlos-mail}"
 CAPTURE_GROUP="${CARLOS_MAIL_CAPTURE_GROUP:-carlos-mail}"
-CAPTURE_MAP="/etc/postfix/carlos-transport-regexp"
-SEND_ALLOWLIST="/etc/postfix/carlos-send-allowlist"
+CAPTURE_MAP="${CARLOS_MAIL_CAPTURE_MAP:-/etc/postfix/carlos-transport-regexp}"
+SEND_ALLOWLIST="${CARLOS_MAIL_SEND_ALLOWLIST:-/etc/postfix/carlos-send-allowlist}"
+EFFECTIVE_SEND_ALLOWLIST="${CARLOS_MAIL_EFFECTIVE_SEND_ALLOWLIST:-${SEND_ALLOWLIST}.effective}"
 
 # Make sure the capture directory and stable lock file exist. This helper runs
 # as root in the devcontainer; delivery itself never does.
@@ -93,6 +94,34 @@ allowlist_entries() {
   grep -vE '^[[:space:]]*(#|$)' "$SEND_ALLOWLIST" 2>/dev/null || true
 }
 
+# A transport-map result such as `smtp:` resets Postfix's next hop to the
+# recipient domain, bypassing relayhost. Render a runtime map that adds the
+# configured relay to otherwise-empty smtp results while preserving explicit
+# per-recipient next hops.
+render_send_allowlist() {
+  local relayhost="${CARLOS_MAIL_RELAYHOST:-}"
+  local temporary_allowlist
+
+  temporary_allowlist="$(mktemp "${EFFECTIVE_SEND_ALLOWLIST}.tmp.XXXXXX")"
+  if ! awk -v relayhost="$relayhost" '
+    /^[[:space:]]*(#|$)/ {
+      print
+      next
+    }
+    relayhost != "" && /[[:space:]]smtp:[[:space:]]*$/ {
+      sub(/[[:space:]]smtp:[[:space:]]*$/, "")
+      print $0 " smtp:" relayhost
+      next
+    }
+    { print }
+  ' "$SEND_ALLOWLIST" > "$temporary_allowlist"; then
+    rm -f "$temporary_allowlist"
+    return 1
+  fi
+  chmod 0644 "$temporary_allowlist"
+  mv -f "$temporary_allowlist" "$EFFECTIVE_SEND_ALLOWLIST"
+}
+
 # Configure Postfix delivery routing from the environment. Default (flag unset)
 # captures everything — nothing can leave the container. With
 # CARLOS_MAIL_ALLOW_SEND=1 the allowlist is consulted first, so only allowlisted
@@ -104,7 +133,8 @@ configure_send_mode() {
   postconf -e "relayhost=${CARLOS_MAIL_RELAYHOST:-}"
 
   if [ "${CARLOS_MAIL_ALLOW_SEND:-0}" = "1" ]; then
-    postconf -e "transport_maps=regexp:${SEND_ALLOWLIST}, regexp:${CAPTURE_MAP}"
+    render_send_allowlist
+    postconf -e "transport_maps=regexp:${EFFECTIVE_SEND_ALLOWLIST}, regexp:${CAPTURE_MAP}"
     echo "⚠️  REAL SEND ENABLED (CARLOS_MAIL_ALLOW_SEND=1)."
     echo "    Allowlisted recipients in $SEND_ALLOWLIST are delivered EXTERNALLY;"
     echo "    every other recipient is still captured to $CAPTURE_FILE."
@@ -137,6 +167,10 @@ case "$command" in
       echo "Starting Postfix..."
       configure_send_mode
       service postfix start
+      # `service postfix start` is intentionally a no-op if Postfix is already
+      # running. Reload so the live daemons apply the mode written above before
+      # this command reports success.
+      service postfix reload
       echo "Capture file: $CAPTURE_FILE"
     ;;
     stop)

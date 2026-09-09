@@ -29,6 +29,13 @@ class MailCaptureTest(unittest.TestCase):
         self.capture_directory = Path(self.temporary_directory.name)
         self.capture_file = self.capture_directory / "messages.eml"
         self.capture_lock = self.capture_directory / ".lock"
+        self.capture_map = self.capture_directory / "capture-map"
+        self.send_allowlist = self.capture_directory / "send-allowlist"
+        self.effective_send_allowlist = (
+            self.capture_directory / "send-allowlist.effective"
+        )
+        self.capture_map.write_text("/.*/ devcapture:\n")
+        self.send_allowlist.write_text("# empty\n")
         if os.geteuid() == 0:
             writer_account = pwd.getpwnam("nobody")
             self.writer_uid = writer_account.pw_uid
@@ -45,6 +52,11 @@ class MailCaptureTest(unittest.TestCase):
             "CARLOS_MAIL_CAPTURE_INBOX": str(INBOX),
             "CARLOS_MAIL_CAPTURE_USER": pwd.getpwuid(self.writer_uid).pw_name,
             "CARLOS_MAIL_CAPTURE_GROUP": grp.getgrgid(self.writer_gid).gr_name,
+            "CARLOS_MAIL_CAPTURE_MAP": str(self.capture_map),
+            "CARLOS_MAIL_SEND_ALLOWLIST": str(self.send_allowlist),
+            "CARLOS_MAIL_EFFECTIVE_SEND_ALLOWLIST": str(
+                self.effective_send_allowlist
+            ),
         }
 
     def tearDown(self) -> None:
@@ -305,6 +317,82 @@ class MailCaptureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 3)
         self.assertIn(b"postfix is not running", result.stdout)
         self.assertIn(b"Capture file:", result.stdout)
+
+    def test_start_reloads_an_already_running_postfix_instance(self) -> None:
+        fake_binary_directory = self.capture_directory / "start-bin"
+        fake_binary_directory.mkdir()
+        service_log = self.capture_directory / "service.log"
+        fake_service = fake_binary_directory / "service"
+        fake_service.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$SERVICE_LOG\"\n"
+        )
+        fake_service.chmod(0o755)
+        fake_postconf = fake_binary_directory / "postconf"
+        fake_postconf.write_text("#!/bin/sh\nexit 0\n")
+        fake_postconf.chmod(0o755)
+        start_environment = self.environment | {
+            "PATH": f"{fake_binary_directory}:/usr/bin:/bin",
+            "SERVICE_LOG": str(service_log),
+        }
+
+        result = subprocess.run(
+            [MAIL, "start"],
+            env=start_environment,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(
+            service_log.read_text().splitlines(),
+            ["postfix start", "postfix reload"],
+        )
+
+    def test_relayhost_is_applied_to_bare_smtp_allowlist_entries(self) -> None:
+        self.send_allowlist.write_text(
+            "/^relayed@example\\.test$/ smtp:\n"
+            "/^direct@example\\.test$/ smtp:[direct.example.test]:2525\n"
+        )
+        fake_binary_directory = self.capture_directory / "relay-bin"
+        fake_binary_directory.mkdir()
+        postconf_log = self.capture_directory / "postconf.log"
+        fake_postconf = fake_binary_directory / "postconf"
+        fake_postconf.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$POSTCONF_LOG\"\n"
+        )
+        fake_postconf.chmod(0o755)
+        fake_service = fake_binary_directory / "service"
+        fake_service.write_text("#!/bin/sh\nexit 0\n")
+        fake_service.chmod(0o755)
+        start_environment = self.environment | {
+            "CARLOS_MAIL_ALLOW_SEND": "1",
+            "CARLOS_MAIL_RELAYHOST": "[relay.example.test]:587",
+            "PATH": f"{fake_binary_directory}:/usr/bin:/bin",
+            "POSTCONF_LOG": str(postconf_log),
+        }
+
+        result = subprocess.run(
+            [MAIL, "start"],
+            env=start_environment,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(
+            self.effective_send_allowlist.read_text().splitlines(),
+            [
+                "/^relayed@example\\.test$/ smtp:[relay.example.test]:587",
+                "/^direct@example\\.test$/ smtp:[direct.example.test]:2525",
+            ],
+        )
+        self.assertIn(
+            "transport_maps="
+            f"regexp:{self.effective_send_allowlist}, regexp:{self.capture_map}",
+            postconf_log.read_text(),
+        )
 
     def test_read_holds_one_shared_lock_across_count_and_output(self) -> None:
         raw_message = b"Subject: Stable snapshot\n\nbody\n"
