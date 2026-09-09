@@ -247,6 +247,9 @@ class MailCaptureTest(unittest.TestCase):
                 capture_output=True,
                 env=self.environment,
                 check=False,
+                preexec_fn=(
+                    self.use_delivery_identity if os.geteuid() == 0 else None
+                ),
             )
 
         with ThreadPoolExecutor(max_workers=5) as executor:
