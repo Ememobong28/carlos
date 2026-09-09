@@ -29,6 +29,7 @@ class MailCaptureTest(unittest.TestCase):
         self.capture_directory = Path(self.temporary_directory.name)
         self.capture_file = self.capture_directory / "messages.eml"
         self.capture_lock = self.capture_directory / ".lock"
+        self.spool_directory = self.capture_directory / ".spool"
         self.capture_map = self.capture_directory / "capture-map"
         self.send_allowlist = self.capture_directory / "send-allowlist"
         self.effective_send_allowlist = (
@@ -36,12 +37,24 @@ class MailCaptureTest(unittest.TestCase):
         )
         self.capture_map.write_text("/.*/ devcapture:\n")
         self.send_allowlist.write_text("# empty\n")
+        self.capture_file.touch()
+        self.capture_lock.touch()
+        self.spool_directory.mkdir()
         if os.geteuid() == 0:
             writer_account = pwd.getpwnam("nobody")
             self.writer_uid = writer_account.pw_uid
             self.writer_gid = writer_account.pw_gid
-            os.chown(self.capture_directory, self.writer_uid, self.writer_gid)
-            self.capture_directory.chmod(0o770)
+            os.chown(self.capture_directory, 0, self.writer_gid)
+            self.capture_directory.chmod(0o750)
+            for writer_path in (
+                self.capture_file,
+                self.capture_lock,
+                self.spool_directory,
+            ):
+                os.chown(writer_path, self.writer_uid, self.writer_gid)
+            self.capture_file.chmod(0o660)
+            self.capture_lock.chmod(0o660)
+            self.spool_directory.chmod(0o770)
         else:
             self.writer_uid = os.getuid()
             self.writer_gid = os.getgid()
@@ -49,6 +62,7 @@ class MailCaptureTest(unittest.TestCase):
             "CARLOS_MAIL_CAPTURE_DIR": str(self.capture_directory),
             "CARLOS_MAIL_CAPTURE_FILE": str(self.capture_file),
             "CARLOS_MAIL_CAPTURE_LOCK": str(self.capture_lock),
+            "CARLOS_MAIL_CAPTURE_SPOOL_DIR": str(self.spool_directory),
             "CARLOS_MAIL_CAPTURE_INBOX": str(INBOX),
             "CARLOS_MAIL_CAPTURE_USER": pwd.getpwuid(self.writer_uid).pw_name,
             "CARLOS_MAIL_CAPTURE_GROUP": grp.getgrgid(self.writer_gid).gr_name,
@@ -62,16 +76,16 @@ class MailCaptureTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def capture(self, raw_message: bytes, recipient: str = "patient@example.test") -> None:
-        def use_delivery_identity() -> None:
-            os.setgid(self.writer_gid)
-            os.setuid(self.writer_uid)
+    def use_delivery_identity(self) -> None:
+        os.setgid(self.writer_gid)
+        os.setuid(self.writer_uid)
 
+    def capture(self, raw_message: bytes, recipient: str = "patient@example.test") -> None:
         subprocess.run(
             [WRITER, "sender@example.test", recipient],
             input=raw_message,
             env=self.environment,
-            preexec_fn=use_delivery_identity if os.geteuid() == 0 else None,
+            preexec_fn=self.use_delivery_identity if os.geteuid() == 0 else None,
             check=True,
         )
 
@@ -125,16 +139,79 @@ class MailCaptureTest(unittest.TestCase):
         self.assertIn(first_message, first_read)
         self.assertNotIn(second_message, first_read)
 
-    def test_delivery_recreates_deleted_capture_file_with_restricted_mode(self) -> None:
+    def test_root_helper_recreates_a_deleted_capture_file(self) -> None:
         self.capture(b"Subject: Before deletion\n\nbody\n")
         self.capture_file.unlink()
 
         replacement = b"Subject: After deletion\n\nreplacement body\n"
+        failed_delivery = subprocess.run(
+            [WRITER, "sender@example.test", "patient@example.test"],
+            input=replacement,
+            env=self.environment,
+            capture_output=True,
+            check=False,
+            preexec_fn=self.use_delivery_identity if os.geteuid() == 0 else None,
+        )
+        self.assertEqual(failed_delivery.returncode, 75)
+
+        self.mail("list")
         self.capture(replacement)
 
         self.assertEqual(self.inbox("count").stdout, b"1\n")
         self.assertIn(replacement, self.inbox("read", "1").stdout)
         self.assertEqual(stat.S_IMODE(self.capture_file.stat().st_mode), 0o660)
+
+    def test_mail_list_escapes_terminal_controls_in_summary_fields(self) -> None:
+        self.capture(
+            b"Subject: copy\x1b]52;c;YXR0YWNrZXI=\x07\n\nbody\n",
+            "patient\x1b[31m@example.test",
+        )
+
+        listing = self.mail("list").stdout
+
+        self.assertNotIn(b"\x1b", listing)
+        self.assertNotIn(b"\x07", listing)
+        self.assertIn(b"copy\\x1b]52;c;YXR0YWNrZXI=\\x07", listing)
+        self.assertIn(b"patient\\x1b[31m@example.test", listing)
+
+    def test_terminal_sanitizer_escapes_controls_but_keeps_unicode(self) -> None:
+        result = subprocess.run(
+            [INBOX, "/dev/stdin", "sanitize"],
+            input="line\nRésumé \x1b[31mred\x1b[0m\x07\n".encode(),
+            capture_output=True,
+            check=True,
+        )
+
+        self.assertEqual(
+            result.stdout,
+            "line\nRésumé \\x1b[31mred\\x1b[0m\\x07\n".encode(),
+        )
+
+    def test_root_helper_refuses_a_symlink_capture_lock(self) -> None:
+        victim = self.capture_directory / "unrelated-file"
+        victim.write_text("must remain unchanged")
+        victim.chmod(0o600)
+        original_stat = victim.stat()
+        self.capture_lock.unlink()
+        self.capture_lock.symlink_to(victim)
+
+        result = subprocess.run(
+            [MAIL, "list"],
+            env=self.environment,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"Refusing non-regular capture lock", result.stderr)
+        self.assertEqual(victim.read_text(), "must remain unchanged")
+        current_stat = victim.stat()
+        self.assertEqual(current_stat.st_uid, original_stat.st_uid)
+        self.assertEqual(current_stat.st_gid, original_stat.st_gid)
+        self.assertEqual(
+            stat.S_IMODE(current_stat.st_mode),
+            stat.S_IMODE(original_stat.st_mode),
+        )
 
     def test_concurrent_deliveries_remain_complete_records(self) -> None:
         def deliver(index: int) -> subprocess.CompletedProcess[bytes]:
@@ -208,7 +285,7 @@ class MailCaptureTest(unittest.TestCase):
 
     def test_clear_waits_for_the_delivery_lock(self) -> None:
         self.capture(b"Subject: Locked\n\nbody\n")
-        orphan_spool = self.capture_directory / ".raw-message.orphaned"
+        orphan_spool = self.spool_directory / ".raw-message.orphaned"
         orphan_spool.write_bytes(b"sensitive unfinished message")
         with self.capture_lock.open("a+b") as lock_stream:
             fcntl.flock(lock_stream, fcntl.LOCK_EX)
@@ -319,6 +396,10 @@ class MailCaptureTest(unittest.TestCase):
         self.assertIn(b"Capture file:", result.stdout)
 
     def test_status_recognizes_configured_effective_allowlist_path(self) -> None:
+        self.send_allowlist.write_text("/^source-only@example\\.test$/ smtp:\n")
+        self.effective_send_allowlist.write_text(
+            "/^actually-active@example\\.test$/ smtp:\n"
+        )
         fake_binary_directory = self.capture_directory / "send-status-bin"
         fake_binary_directory.mkdir()
         fake_service = fake_binary_directory / "service"
@@ -347,6 +428,8 @@ class MailCaptureTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertIn(b"REAL SEND enabled", result.stdout)
+        self.assertIn(b"actually-active@example", result.stdout)
+        self.assertNotIn(b"source-only@example", result.stdout)
 
     def test_start_reloads_an_already_running_postfix_instance(self) -> None:
         fake_binary_directory = self.capture_directory / "start-bin"

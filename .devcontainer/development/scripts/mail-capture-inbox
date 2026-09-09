@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 from dataclasses import dataclass
 from email import policy
 from email.parser import BytesParser
@@ -139,6 +140,40 @@ def _subject(message: CapturedMessage) -> str:
     return " ".join(subject.splitlines())
 
 
+def _terminal_safe_text(value: str, *, preserve_layout: bool = False) -> str:
+    """Escape terminal controls while retaining readable Unicode text."""
+
+    safe_characters: list[str] = []
+    for character in value:
+        if character.isprintable() or (
+            preserve_layout and character in ("\n", "\r", "\t")
+        ):
+            safe_characters.append(character)
+            continue
+        codepoint = ord(character)
+        if codepoint <= 0xFF:
+            safe_characters.append(f"\\x{codepoint:02x}")
+        elif codepoint <= 0xFFFF:
+            safe_characters.append(f"\\u{codepoint:04x}")
+        else:
+            safe_characters.append(f"\\U{codepoint:08x}")
+    return "".join(safe_characters)
+
+
+def _write_terminal_safe_stream(stream: BinaryIO) -> None:
+    """Copy a byte stream to stdout without emitting terminal controls."""
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="backslashreplace")
+    while chunk := stream.read(8192):
+        decoded = decoder.decode(chunk)
+        sys.stdout.write(_terminal_safe_text(decoded, preserve_layout=True))
+        sys.stdout.flush()
+    final_text = decoder.decode(b"", final=True)
+    if final_text:
+        sys.stdout.write(_terminal_safe_text(final_text, preserve_layout=True))
+        sys.stdout.flush()
+
+
 def list_messages(messages: Iterable[CapturedMessage]) -> None:
     """Print the inbox summary used by `mail list`."""
 
@@ -148,8 +183,9 @@ def list_messages(messages: Iterable[CapturedMessage]) -> None:
             print(f"{'ID':<4}  {'CAPTURED AT':<25}  {'RECIPIENT':<30}  SUBJECT")
             found_message = True
         print(
-            f"{index:<4}  {message.captured_at:<25}  "
-            f"{message.envelope_to:<30}  {_subject(message)}"
+            f"{index:<4}  {_terminal_safe_text(message.captured_at):<25}  "
+            f"{_terminal_safe_text(message.envelope_to):<30}  "
+            f"{_terminal_safe_text(_subject(message))}"
         )
     if not found_message:
         print("No captured messages.")
@@ -163,12 +199,26 @@ def read_message(messages: Iterable[CapturedMessage], requested: int) -> None:
         if message_count != requested:
             continue
         output = sys.stdout.buffer
+        terminal_output = sys.stdout.isatty()
         output.write(FRAME_MARKER)
-        output.write(f"Captured-At: {message.captured_at}\n".encode())
-        output.write(f"Envelope-From: {message.envelope_from}\n".encode())
-        output.write(f"Envelope-To: {message.envelope_to}\n".encode())
+        metadata = (
+            f"Captured-At: {message.captured_at}\n"
+            f"Envelope-From: {message.envelope_from}\n"
+            f"Envelope-To: {message.envelope_to}\n"
+        )
+        if terminal_output:
+            metadata = _terminal_safe_text(metadata, preserve_layout=True)
+        output.write(metadata.encode())
         output.write(b"----- BEGIN RAW MESSAGE -----\n")
-        output.write(message.raw_message)
+        if terminal_output:
+            decoded_message = message.raw_message.decode(
+                "utf-8", errors="backslashreplace"
+            )
+            output.write(
+                _terminal_safe_text(decoded_message, preserve_layout=True).encode()
+            )
+        else:
+            output.write(message.raw_message)
         if not message.raw_message.endswith(b"\n"):
             output.write(b"\n")
         output.write(b"----- END RAW MESSAGE -----\n")
@@ -181,7 +231,10 @@ def read_message(messages: Iterable[CapturedMessage], requested: int) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("capture_file", type=Path)
-    parser.add_argument("command", choices=("count", "list", "read", "repair"))
+    parser.add_argument(
+        "command",
+        choices=("count", "list", "read", "repair", "display", "sanitize"),
+    )
     parser.add_argument("message_number", nargs="?", type=int)
     arguments = parser.parse_args()
 
@@ -198,6 +251,11 @@ def main() -> int:
                     "trailing record",
                     file=sys.stderr,
                 )
+        elif arguments.command == "display":
+            with arguments.capture_file.open("rb") as stream:
+                _write_terminal_safe_stream(stream)
+        elif arguments.command == "sanitize":
+            _write_terminal_safe_stream(sys.stdin.buffer)
         elif arguments.message_number is None:
             parser.error("read requires a message number")
         else:

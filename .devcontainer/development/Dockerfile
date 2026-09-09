@@ -177,12 +177,14 @@ RUN /usr/local/bin/apt-install pipx && \
 RUN /usr/local/bin/apt-install postfix util-linux
 
 # Give the Postfix pipe a dedicated identity and a tightly permissioned capture
-# directory. Keeping the file inside a directory owned by the delivery user lets
-# it be recreated safely at runtime without making /var/log broadly writable.
+# layout. The root-owned parent prevents the delivery user from replacing the
+# lock or capture file; its private spool remains writable for atomic capture.
 RUN groupadd --system carlos-mail && \
     useradd --system --gid carlos-mail --home-dir /nonexistent \
       --shell /usr/sbin/nologin carlos-mail && \
-    install -d -o carlos-mail -g carlos-mail -m 0770 /var/log/carlos-mail-capture && \
+    install -d -o root -g carlos-mail -m 0750 /var/log/carlos-mail-capture && \
+    install -d -o carlos-mail -g carlos-mail -m 0770 \
+      /var/log/carlos-mail-capture/.spool && \
     install -o carlos-mail -g carlos-mail -m 0660 /dev/null \
       /var/log/carlos-mail-capture/messages.eml && \
     install -o carlos-mail -g carlos-mail -m 0660 /dev/null \
