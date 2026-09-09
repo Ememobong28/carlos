@@ -44,7 +44,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'rollback_capture; exit 75' HUP INT TERM
 
-if [ ! -d "$CAPTURE_SPOOL_DIR" ] || [ ! -w "$CAPTURE_SPOOL_DIR" ]; then
+if [ -L "$CAPTURE_SPOOL_DIR" ] ||
+  [ ! -d "$CAPTURE_SPOOL_DIR" ] ||
+  [ ! -w "$CAPTURE_SPOOL_DIR" ]; then
   echo "Mail capture spool is missing or not writable: $CAPTURE_SPOOL_DIR" >&2
   exit 75
 fi

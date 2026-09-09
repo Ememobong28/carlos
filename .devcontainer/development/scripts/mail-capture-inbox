@@ -146,7 +146,7 @@ def _terminal_safe_text(value: str, *, preserve_layout: bool = False) -> str:
     safe_characters: list[str] = []
     for character in value:
         if character.isprintable() or (
-            preserve_layout and character in ("\n", "\r", "\t")
+            preserve_layout and character in ("\n", "\t")
         ):
             safe_characters.append(character)
             continue

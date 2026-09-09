@@ -177,15 +177,37 @@ class MailCaptureTest(unittest.TestCase):
     def test_terminal_sanitizer_escapes_controls_but_keeps_unicode(self) -> None:
         result = subprocess.run(
             [INBOX, "/dev/stdin", "sanitize"],
-            input="line\nRésumé \x1b[31mred\x1b[0m\x07\n".encode(),
+            input="line\nRésumé \x1b[31mred\x1b[0m\x07\rspoof\n".encode(),
             capture_output=True,
             check=True,
         )
 
         self.assertEqual(
             result.stdout,
-            "line\nRésumé \\x1b[31mred\\x1b[0m\\x07\n".encode(),
+            "line\nRésumé \\x1b[31mred\\x1b[0m\\x07\\x0dspoof\n".encode(),
         )
+
+    def test_delivery_refuses_a_symlink_capture_spool(self) -> None:
+        self.spool_directory.rmdir()
+        spool_target = self.capture_directory / "outside-spool"
+        spool_target.mkdir()
+        if os.geteuid() == 0:
+            os.chown(spool_target, self.writer_uid, self.writer_gid)
+        spool_target.chmod(0o770)
+        self.spool_directory.symlink_to(spool_target, target_is_directory=True)
+
+        result = subprocess.run(
+            [WRITER, "sender@example.test", "patient@example.test"],
+            input=b"Subject: Must not spool through a symlink\n\nbody\n",
+            env=self.environment,
+            capture_output=True,
+            check=False,
+            preexec_fn=self.use_delivery_identity if os.geteuid() == 0 else None,
+        )
+
+        self.assertEqual(result.returncode, 75)
+        self.assertIn(b"capture spool is missing or not writable", result.stderr)
+        self.assertEqual(list(spool_target.iterdir()), [])
 
     def test_root_helper_refuses_a_symlink_capture_lock(self) -> None:
         victim = self.capture_directory / "unrelated-file"
