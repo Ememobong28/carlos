@@ -211,6 +211,7 @@ RUN printf '%s\n' \
     '# captured locally. NEVER add a real patient address here — use only your own' \
     '# test inbox. Example (uncomment and edit):' \
     '# /^me@my-test-inbox\.example\.com$/  smtp:' \
+    '# After editing, rerun CARLOS_MAIL_ALLOW_SEND=1 mail start to apply changes.' \
     > /etc/postfix/carlos-send-allowlist
 
 # `mail start` renders the user-maintained allowlist above into this runtime

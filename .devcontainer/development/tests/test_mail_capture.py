@@ -318,6 +318,36 @@ class MailCaptureTest(unittest.TestCase):
         self.assertIn(b"postfix is not running", result.stdout)
         self.assertIn(b"Capture file:", result.stdout)
 
+    def test_status_recognizes_configured_effective_allowlist_path(self) -> None:
+        fake_binary_directory = self.capture_directory / "send-status-bin"
+        fake_binary_directory.mkdir()
+        fake_service = fake_binary_directory / "service"
+        fake_service.write_text("#!/bin/sh\nexit 0\n")
+        fake_service.chmod(0o755)
+        fake_postconf = fake_binary_directory / "postconf"
+        fake_postconf.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = -h ] && [ \"$2\" = transport_maps ]; then\n"
+            "  printf 'regexp:%s, regexp:%s\\n' "
+            "\"$CARLOS_MAIL_EFFECTIVE_SEND_ALLOWLIST\" "
+            "\"$CARLOS_MAIL_CAPTURE_MAP\"\n"
+            "fi\n"
+        )
+        fake_postconf.chmod(0o755)
+        status_environment = self.environment | {
+            "PATH": f"{fake_binary_directory}:/usr/bin:/bin",
+        }
+
+        result = subprocess.run(
+            [MAIL, "status"],
+            env=status_environment,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn(b"REAL SEND enabled", result.stdout)
+
     def test_start_reloads_an_already_running_postfix_instance(self) -> None:
         fake_binary_directory = self.capture_directory / "start-bin"
         fake_binary_directory.mkdir()

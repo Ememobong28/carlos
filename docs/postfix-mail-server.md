@@ -80,13 +80,7 @@ delivered for real (for example, to your own test inbox), you can enable it per
 recipient. **This is deliberately hard to trigger by accident** and requires
 **both**:
 
-1. Starting the mail server with the env flag set:
-
-   ```bash
-   CARLOS_MAIL_ALLOW_SEND=1 mail start
-   ```
-
-2. Adding the specific recipient address to the allowlist
+1. Adding the specific recipient address to the allowlist
    `/etc/postfix/carlos-send-allowlist` (a Postfix regexp transport map). It ships
    **empty**, so the env flag alone sends nothing — every message stays captured
    until you add an address. For example:
@@ -98,6 +92,15 @@ recipient. **This is deliberately hard to trigger by accident** and requires
    When `CARLOS_MAIL_RELAYHOST` is set, `mail start` applies it to bare `smtp:`
    entries like this one. An entry with an explicit next hop, such as
    `smtp:[another-relay.example.com]:2525`, keeps that per-recipient destination.
+
+2. Starting the mail server with the env flag set **after** editing the allowlist:
+
+   ```bash
+   CARLOS_MAIL_ALLOW_SEND=1 mail start
+   ```
+
+`mail start` generates the effective Postfix map from the current allowlist.
+Rerun the command with the flag after every allowlist change.
 
 When send mode is active, **only allowlisted recipients are delivered
 externally** (via `smtp`); every other recipient is still captured. `mail status`
@@ -191,8 +194,8 @@ Expected (capture-only default): `transport_maps` points at
 `/etc/postfix/carlos-transport-regexp`,
 `default_transport`/`relay_transport`/`local_transport` are `devcapture:`, and a
 `devcapture` pipe service is present in `master.cf`. If you enabled opt-in send,
-`transport_maps` also lists `/etc/postfix/carlos-send-allowlist` ahead of the
-capture map — `mail status` reports the active mode.
+`transport_maps` also lists `/etc/postfix/carlos-send-allowlist.effective` ahead
+of the capture map — `mail status` reports the active mode.
 
 ## Technical Details
 

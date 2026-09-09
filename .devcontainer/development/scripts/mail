@@ -149,7 +149,7 @@ configure_send_mode() {
 
 # Print the current delivery mode for `mail status`.
 report_send_mode() {
-  if postconf -h transport_maps 2>/dev/null | grep -q 'carlos-send-allowlist'; then
+  if postconf -h transport_maps 2>/dev/null | grep -Fq -- "$EFFECTIVE_SEND_ALLOWLIST"; then
     echo "Send mode: REAL SEND enabled for allowlisted recipients."
     echo "Allowlist ($SEND_ALLOWLIST):"
     if [ -n "$(allowlist_entries)" ]; then
