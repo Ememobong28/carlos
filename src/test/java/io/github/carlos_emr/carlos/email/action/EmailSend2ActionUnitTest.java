@@ -149,21 +149,47 @@ class EmailSend2ActionUnitTest extends CarlosUnitTestBase {
         String result = newAction().execute();
 
         assertThat(result).isEqualTo(ActionSupport.NONE);
+        assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_NO_CONTENT);
         assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST)).isNull();
         verifyNoInteractions(emailManager, eformDataManager);
     }
 
     @Test
-    @DisplayName("should complete POST cancel when transaction type is missing")
-    void shouldCompletePostCancel_whenTransactionTypeIsMissing() {
+    @DisplayName("should reject POST cancel when transaction type is missing")
+    void shouldRejectPostCancel_whenTransactionTypeIsMissing() {
         grantEmailWritePrivilege();
         request.setMethod("POST");
         request.setParameter("method", "cancel");
+        List<?> attachments = List.of("sentinel");
+        request.getSession().setAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST, attachments);
 
         String result = newAction().execute();
 
         assertThat(result).isEqualTo(ActionSupport.NONE);
+        assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_BAD_REQUEST);
         assertThat(response.getRedirectedUrl()).isNull();
+        assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST))
+                .isSameAs(attachments);
+        verifyNoInteractions(emailManager, eformDataManager);
+    }
+
+    @Test
+    @DisplayName("should reject POST cancel when transaction type is misspelled")
+    void shouldRejectPostCancel_whenTransactionTypeIsMisspelled() {
+        grantEmailWritePrivilege();
+        request.setMethod("POST");
+        request.setParameter("method", "cancel");
+        request.setParameter("transactionType", "EFROM");
+        List<?> attachments = List.of("sentinel");
+        request.getSession().setAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST, attachments);
+
+        String result = newAction().execute();
+
+        assertThat(result).isEqualTo(ActionSupport.NONE);
+        assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_BAD_REQUEST);
+        assertThat(response.getRedirectedUrl()).isNull();
+        assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST))
+                .isSameAs(attachments);
         verifyNoInteractions(emailManager, eformDataManager);
     }
 

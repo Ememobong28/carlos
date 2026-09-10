@@ -195,16 +195,17 @@ public class EmailSend2Action extends ActionSupport {
      *
      * <p>This method handles the cancel workflow by:</p>
      * <ul>
-     *   <li>Reading the transaction type from the request (via {@link EmailData} for the
-     *       shared string-to-enum mapping) to determine the return destination</li>
-     *   <li>Performing context-specific redirects based on the transaction type</li>
-     *   <li>For EFORM transactions: redirects to the EForm display page with original form data</li>
+     *   <li>Validating the transaction type before consuming session state</li>
+     *   <li>For EFORM transactions: redirecting to the EForm display page with original form data</li>
+     *   <li>For DIRECT transactions: returning 204 so a browser that cannot close the compose
+     *       window does not navigate to an empty response</li>
      * </ul>
      *
      * <p>The action is POST-only because cancellation consumes the session-scoped attachment
      * list. The legitimate cancel path in {@code emailCompose.jsp} submits the compose form via
-     * POST. EFORM cancellation writes a redirect directly and returns {@link #NONE}, preventing
-     * Struts from also executing the named EFORM result after the response is committed.</p>
+     * POST. Missing or unsupported transaction types are rejected with 400 before the attachment
+     * list is consumed. Valid cancellation writes its response directly and returns {@link #NONE},
+     * preventing Struts from executing another result.</p>
      *
      * @return {@link #NONE} after cancellation is handled
      * @throws RuntimeException if IOException occurs during redirect for EFORM transactions
@@ -212,16 +213,24 @@ public class EmailSend2Action extends ActionSupport {
     // FindSecBugs UNVALIDATED_REDIRECT: redirect target is a same-origin application path or validated internal path, not an attacker-controlled external URL.
     @SuppressFBWarnings(value = "UNVALIDATED_REDIRECT", justification = "redirect target is a same-origin application path or validated internal path, not an attacker-controlled external URL")
     public String cancel() {
-        EmailData emailData = new EmailData();
-        emailData.setTransactionType(request.getParameter("transactionType"));
+        String transactionType = request.getParameter("transactionType");
+        if (!"DIRECT".equals(transactionType) && !"EFORM".equals(transactionType)) {
+            return rejectRequest(
+                    HttpServletResponse.SC_BAD_REQUEST,
+                    "Unsupported email transaction type",
+                    "Failed to send 400 for unsupported email transaction type");
+        }
+
         request.getSession().removeAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST);
-        if (emailData.getTransactionType().equals(EmailLog.TransactionType.EFORM)) {
+        if ("EFORM".equals(transactionType)) {
             try {
                 response.sendRedirect(request.getContextPath() + "/eform/efmshowform_data?fdid="
                         + SafeEncode.forUriComponent(request.getParameter("fdid")) + "&parentAjaxId=eforms");
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
+        } else {
+            response.setStatus(HttpServletResponse.SC_NO_CONTENT);
         }
         return NONE;
     }
