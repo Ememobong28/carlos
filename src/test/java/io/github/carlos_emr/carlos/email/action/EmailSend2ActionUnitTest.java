@@ -57,12 +57,9 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Unit tests for {@link EmailSend2Action}: redirect safety and the HTTP-method
- * rejection contract for send dispatches (issue #3111). Registered in
- * {@code MutatorActionGetRejectionContractTest#CONDITIONAL_MUTATORS} — the
- * {@code cancel} dispatch is legitimate GET navigation, so this focused test
- * pins the mutation-intent paths (no {@code method} param, or
- * {@code method=sendDirectEmail}) rejecting GET/HEAD before any side effect.
+ * Unit tests for {@link EmailSend2Action}: redirect safety, explicit dispatch
+ * allowlisting, and the POST-only contract (issue #3111). The action is registered in
+ * {@code MutatorActionGetRejectionContractUnitTest#unconditionalMutators()}.
  *
  * @since 2026-05-20
  */
@@ -70,7 +67,7 @@ import static org.mockito.Mockito.when;
 @Tag("fast")
 @Tag("email")
 @DisplayName("EmailSend2Action")
-class EmailSend2ActionTest extends CarlosUnitTestBase {
+class EmailSend2ActionUnitTest extends CarlosUnitTestBase {
 
     private MockedStatic<ServletActionContext> servletActionContextMock;
 
@@ -121,18 +118,22 @@ class EmailSend2ActionTest extends CarlosUnitTestBase {
     }
 
     @Test
-    @DisplayName("should preserve session attachments when cancel arrives via GET")
-    void shouldPreserveSessionAttachments_whenCancelArrivesViaGet() {
+    @DisplayName("should reject GET cancel without consuming session attachments")
+    void shouldRejectGetCancel_withoutConsumingSessionAttachments() {
         grantEmailWritePrivilege();
         request.setMethod("GET");
         request.setParameter("method", "cancel");
         request.setParameter("transactionType", "DIRECT");
-        request.getSession().setAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST, List.of());
+        List<?> attachments = List.of("sentinel");
+        request.getSession().setAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST, attachments);
 
         String result = newAction().execute();
 
-        assertThat(result).isEqualTo("DIRECT");
-        assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST)).isNotNull();
+        assertThat(result).isEqualTo(ActionSupport.NONE);
+        assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_METHOD_NOT_ALLOWED);
+        assertThat(response.getHeader("Allow")).isEqualTo("POST");
+        assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST))
+                .isSameAs(attachments);
         verifyNoInteractions(emailManager, eformDataManager);
     }
 
@@ -147,46 +148,51 @@ class EmailSend2ActionTest extends CarlosUnitTestBase {
 
         String result = newAction().execute();
 
-        assertThat(result).isEqualTo("DIRECT");
+        assertThat(result).isEqualTo(ActionSupport.NONE);
         assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST)).isNull();
         verifyNoInteractions(emailManager, eformDataManager);
     }
 
     @Test
-    @DisplayName("should default cancel navigation to direct when transaction type is missing")
-    void shouldDefaultCancelNavigationToDirect_whenTransactionTypeIsMissing() {
+    @DisplayName("should complete POST cancel when transaction type is missing")
+    void shouldCompletePostCancel_whenTransactionTypeIsMissing() {
         grantEmailWritePrivilege();
-        request.setMethod("GET");
+        request.setMethod("POST");
         request.setParameter("method", "cancel");
 
         String result = newAction().execute();
 
-        assertThat(result).isEqualTo("DIRECT");
+        assertThat(result).isEqualTo(ActionSupport.NONE);
+        assertThat(response.getRedirectedUrl()).isNull();
         verifyNoInteractions(emailManager, eformDataManager);
     }
 
     @Test
     @DisplayName("should encode fdid when cancel redirects to eForm")
     void shouldEncodeFdid_whenCancelRedirectsToEForm() {
+        grantEmailWritePrivilege();
+        request.setMethod("POST");
+        request.setParameter("method", "cancel");
         request.setParameter("transactionType", "EFORM");
         request.setParameter("fdid", "123&parentAjaxId=evil#fragment%25 +/");
-        LoggedInInfo.setLoggedInInfoIntoSession(request.getSession(), new LoggedInInfo());
 
-        String result = newAction().cancel();
+        String result = newAction().execute();
 
-        assertThat(result).isEqualTo("EFORM");
+        assertThat(result).isEqualTo(ActionSupport.NONE);
         assertThat(response.getRedirectedUrl()).isEqualTo(
                 "/carlos/eform/efmshowform_data?fdid="
                         + "123%26parentAjaxId%3Devil%23fragment%2525%20%2B%2F&parentAjaxId=eforms");
+        verifyNoInteractions(emailManager, eformDataManager);
     }
 
     /**
-     * The GET/HEAD rejection contract for send dispatches: a crafted GET URL must
-     * not send patient email, persist an {@code EmailLog}, or delete eForm data.
+     * The action-level method and dispatch contract: non-POST requests and unknown
+     * dispatch values must not send patient email, persist an {@code EmailLog},
+     * delete eForm data, or consume session-scoped attachments.
      */
     @Nested
-    @DisplayName("HTTP-method rejection for send dispatches")
-    class SendDispatchMethodRejection {
+    @DisplayName("HTTP method and dispatch rejection")
+    class RequestRejection {
 
         @Test
         @DisplayName("should send 405 without side effects when GET has no method parameter")
@@ -195,12 +201,16 @@ class EmailSend2ActionTest extends CarlosUnitTestBase {
             request.setMethod("GET");
             request.setParameter("deleteEFormAfterEmail", "true");
             request.setParameter("fdid", "42");
+            List<?> attachments = List.of("sentinel");
+            request.getSession().setAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST, attachments);
 
             String result = newAction().execute();
 
             assertThat(result).isEqualTo(ActionSupport.NONE);
             assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_METHOD_NOT_ALLOWED);
             assertThat(response.getHeader("Allow")).isEqualTo("POST");
+            assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST))
+                    .isSameAs(attachments);
             verifyNoInteractions(emailManager, eformDataManager);
         }
 
@@ -210,12 +220,16 @@ class EmailSend2ActionTest extends CarlosUnitTestBase {
             grantEmailWritePrivilege();
             request.setMethod("GET");
             request.setParameter("method", "sendDirectEmail");
+            List<?> attachments = List.of("sentinel");
+            request.getSession().setAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST, attachments);
 
             String result = newAction().execute();
 
             assertThat(result).isEqualTo(ActionSupport.NONE);
             assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_METHOD_NOT_ALLOWED);
             assertThat(response.getHeader("Allow")).isEqualTo("POST");
+            assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST))
+                    .isSameAs(attachments);
             verifyNoInteractions(emailManager, eformDataManager);
         }
 
@@ -224,12 +238,16 @@ class EmailSend2ActionTest extends CarlosUnitTestBase {
         void shouldSend405WithoutSideEffects_whenHeadCarriesSendIntent() {
             grantEmailWritePrivilege();
             request.setMethod("HEAD");
+            List<?> attachments = List.of("sentinel");
+            request.getSession().setAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST, attachments);
 
             String result = newAction().execute();
 
             assertThat(result).isEqualTo(ActionSupport.NONE);
             assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_METHOD_NOT_ALLOWED);
             assertThat(response.getHeader("Allow")).isEqualTo("POST");
+            assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST))
+                    .isSameAs(attachments);
             verifyNoInteractions(emailManager, eformDataManager);
         }
 
@@ -253,18 +271,20 @@ class EmailSend2ActionTest extends CarlosUnitTestBase {
         }
 
         @Test
-        @DisplayName("should allow cancel navigation when GET method is cancel")
-        void shouldAllowCancelNavigation_whenGetMethodIsCancel() {
+        @DisplayName("should reject misspelled dispatch without consuming session attachments")
+        void shouldRejectMisspelledDispatch_withoutConsumingSessionAttachments() {
             grantEmailWritePrivilege();
-            request.setMethod("GET");
-            request.setParameter("method", "cancel");
-            request.setParameter("transactionType", "EFORM");
-            request.setParameter("fdid", "42");
+            request.setMethod("POST");
+            request.setParameter("method", "cacnel");
+            List<?> attachments = List.of("sentinel");
+            request.getSession().setAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST, attachments);
 
             String result = newAction().execute();
 
-            assertThat(result).isEqualTo("EFORM");
-            assertThat(response.getStatus()).isNotEqualTo(HttpServletResponse.SC_METHOD_NOT_ALLOWED);
+            assertThat(result).isEqualTo(ActionSupport.NONE);
+            assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_BAD_REQUEST);
+            assertThat(request.getSession().getAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST))
+                    .isSameAs(attachments);
             verifyNoInteractions(emailManager, eformDataManager);
         }
 
@@ -273,6 +293,24 @@ class EmailSend2ActionTest extends CarlosUnitTestBase {
         void shouldSendEFormEmail_whenPostHasNoMethodParameter() {
             grantEmailWritePrivilege();
             request.setMethod("POST");
+            EmailLog emailLog = new EmailLog();
+            emailLog.setStatus(EmailStatus.SUCCESS);
+            when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class)))
+                .thenReturn(emailLog);
+
+            String result = newAction().execute();
+
+            assertThat(result).isEqualTo(ActionSupport.SUCCESS);
+            verify(emailManager).sendEmail(any(LoggedInInfo.class), any(EmailData.class));
+            assertThat(request.getAttribute("isEmailSuccessful")).isEqualTo(true);
+        }
+
+        @Test
+        @DisplayName("should send eForm email when POST has method sendEFormEmail")
+        void shouldSendEFormEmail_whenPostHasSendEFormEmailMethod() {
+            grantEmailWritePrivilege();
+            request.setMethod("POST");
+            request.setParameter("method", "sendEFormEmail");
             EmailLog emailLog = new EmailLog();
             emailLog.setStatus(EmailStatus.SUCCESS);
             when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class)))

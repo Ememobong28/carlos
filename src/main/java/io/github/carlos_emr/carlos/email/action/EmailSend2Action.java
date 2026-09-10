@@ -69,19 +69,24 @@ public class EmailSend2Action extends ActionSupport {
      *
      * <p>This method implements method-based routing for the following email workflows:</p>
      * <ul>
-     *   <li><strong>sendDirectEmail</strong> - Sends email directly without EForm context (POST only)</li>
+     *   <li><strong>sendDirectEmail</strong> - Sends email directly without EForm context</li>
+     *   <li><strong>sendEFormEmail</strong> - Sends email with EForm context</li>
      *   <li><strong>cancel</strong> - Cancels email operation and redirects to source</li>
-     *   <li><strong>default</strong> - Sends email with EForm context (if no method parameter specified; POST only)</li>
+     *   <li><strong>default</strong> - Sends email with EForm context when no method parameter is specified</li>
      * </ul>
      *
-     * <p><strong>HTTP-method contract:</strong> every dispatch except {@code method=cancel} is a
-     * mutation — it transmits patient email outbound, persists an {@link EmailLog}, and may delete
-     * eForm data. Those paths reject non-POST requests with 405 before any side effect fires, per
-     * the mutator GET/HEAD rejection contract ({@code MutatorActionGetRejectionContractTest}).
-     * The {@code cancel} dispatch is pure navigation and stays reachable via GET.</p>
+     * <p><strong>HTTP-method contract:</strong> the entire action is POST-only. Send dispatches
+     * transmit patient email outbound, persist an {@link EmailLog}, and may delete eForm data;
+     * cancel consumes the in-progress attachment state. Non-POST requests are rejected with 405
+     * before dispatch, matching both {@code HttpMethodGuardFilter} and
+     * {@code MutatorActionGetRejectionContractUnitTest}.</p>
+     *
+     * <p>Only the three named dispatches above and the absent-method eForm default are accepted.
+     * Any other method parameter is rejected with 400 rather than falling through to an email
+     * send, so a misspelled cancel or send action cannot trigger the default mutation.</p>
      *
      * @return String Struts2 result identifier - "success" for successful email operations,
-     *         transaction type name for cancel operations, or NONE after a 405 rejection
+     *         or NONE after cancellation or request rejection
      */
     public String execute () {
         LoggedInInfo loggedInInfo = LoggedInInfo.getLoggedInInfoFromSession(request);
@@ -89,30 +94,42 @@ public class EmailSend2Action extends ActionSupport {
             throw new SecurityException("missing required sec object (_email)");
         }
 
-        if ("cancel".equals(request.getParameter("method"))) {
-            return cancel();
-        }
-
-        // Send intent (method=sendDirectEmail or the default eForm send): a crafted GET link
-        // could otherwise send PHI outbound and delete eForm data cross-site, since CSRFGuard's
-        // form-POST token protection does not cover GET-triggerable mutations.
+        // A crafted GET link could otherwise send PHI outbound, delete eForm data, or consume
+        // in-progress attachment state. The deployed HttpMethodGuardFilter also rejects GET/HEAD
+        // method=cancel, so keep the action-level contract consistently POST-only.
         if (!"POST".equals(request.getMethod())) {
             response.setHeader("Allow", "POST");
-            try {
-                response.sendError(HttpServletResponse.SC_METHOD_NOT_ALLOWED, "POST required");
-            } catch (IOException | IllegalStateException e) {
-                // sendError throws IllegalStateException if the response is already committed
-                // (e.g. client abort) and IOException on write failure. The mutation is still
-                // blocked by returning NONE below; log for observability only.
-                logger.warn("Failed to send 405 on non-POST email send attempt", e);
-            }
-            return NONE;
+            return rejectRequest(
+                    HttpServletResponse.SC_METHOD_NOT_ALLOWED,
+                    "POST required",
+                    "Failed to send 405 on non-POST email action attempt");
         }
 
-        if ("sendDirectEmail".equals(request.getParameter("method"))) {
+        String method = request.getParameter("method");
+        if (method == null || "sendEFormEmail".equals(method)) {
+            return sendEFormEmail();
+        }
+        if ("sendDirectEmail".equals(method)) {
             return sendDirectEmail();
         }
-        return sendEFormEmail();
+        if ("cancel".equals(method)) {
+            return cancel();
+        }
+        return rejectRequest(
+                HttpServletResponse.SC_BAD_REQUEST,
+                "Unsupported email action",
+                "Failed to send 400 for unsupported email action");
+    }
+
+    private String rejectRequest(int status, String clientMessage, String logMessage) {
+        try {
+            response.sendError(status, clientMessage);
+        } catch (IOException | IllegalStateException e) {
+            // sendError throws IllegalStateException if the response is already committed and
+            // IOException on write failure. Returning NONE still prevents action dispatch.
+            logger.warn(logMessage, e);
+        }
+        return NONE;
     }
 
     /**
@@ -184,13 +201,12 @@ public class EmailSend2Action extends ActionSupport {
      *   <li>For EFORM transactions: redirects to the EForm display page with original form data</li>
      * </ul>
      *
-     * <p>Cancel stays reachable via GET as pure navigation, so it must not consume
-     * session state: the {@code emailAttachmentList} cleanup (a mutation) only runs for
-     * POST requests, keeping a crafted GET link from clearing an in-progress email's
-     * attachments. The legitimate cancel path in {@code emailCompose.jsp} submits the
-     * compose form via POST and retains the cleanup.</p>
+     * <p>The action is POST-only because cancellation consumes the session-scoped attachment
+     * list. The legitimate cancel path in {@code emailCompose.jsp} submits the compose form via
+     * POST. EFORM cancellation writes a redirect directly and returns {@link #NONE}, preventing
+     * Struts from also executing the named EFORM result after the response is committed.</p>
      *
-     * @return String Struts2 result identifier matching the transaction type name
+     * @return {@link #NONE} after cancellation is handled
      * @throws RuntimeException if IOException occurs during redirect for EFORM transactions
      */
     // FindSecBugs UNVALIDATED_REDIRECT: redirect target is a same-origin application path or validated internal path, not an attacker-controlled external URL.
@@ -198,12 +214,7 @@ public class EmailSend2Action extends ActionSupport {
     public String cancel() {
         EmailData emailData = new EmailData();
         emailData.setTransactionType(request.getParameter("transactionType"));
-        // Session cleanup is a mutation, so it is POST-gated: cancel is GET-reachable
-        // navigation and a crafted GET link must not clear in-progress attachments.
-        if ("POST".equals(request.getMethod())) {
-            request.getSession().removeAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST);
-        }
-        String emailRedirect = emailData.getTransactionType().name();
+        request.getSession().removeAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST);
         if (emailData.getTransactionType().equals(EmailLog.TransactionType.EFORM)) {
             try {
                 response.sendRedirect(request.getContextPath() + "/eform/efmshowform_data?fdid="
@@ -212,7 +223,7 @@ public class EmailSend2Action extends ActionSupport {
                 throw new RuntimeException(e);
             }
         }
-        return emailRedirect;
+        return NONE;
     }
 
     /**

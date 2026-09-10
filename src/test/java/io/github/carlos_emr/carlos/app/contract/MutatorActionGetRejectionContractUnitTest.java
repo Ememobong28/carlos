@@ -177,6 +177,10 @@ class MutatorActionGetRejectionContractUnitTest {
                     "_form", "w"),
             Arguments.of("io.github.carlos_emr.carlos.eform.actions.AddEForm2Action",
                     "_eform", "w"),
+            // The complete email send/cancel action is POST-only. Send dispatches transmit email
+            // and persist EmailLog; cancel consumes session-scoped attachment state.
+            Arguments.of("io.github.carlos_emr.carlos.email.action.EmailSend2Action",
+                    "_email", "w"),
             // --- encounter / consultation ---
             Arguments.of("io.github.carlos_emr.carlos.encounter.oscarConsultationRequest.pageUtil.EctConsultationFormRequest2Action",
                     "_con", "w"),
@@ -252,9 +256,6 @@ class MutatorActionGetRejectionContractUnitTest {
         "io.github.carlos_emr.carlos.appointment.gate.ViewAppointmentSelfPost2Action",
         // Decision: rejects GET when submit param starts with "save".
         "io.github.carlos_emr.carlos.decision.gate.ViewDecision2Action",
-        // Email: method=cancel navigation permits GET; send dispatches (sendDirectEmail or the
-        // default eForm send) are POST-only. Focused test: EmailSend2ActionTest.
-        "io.github.carlos_emr.carlos.email.action.EmailSend2Action",
         // HRM: rejects GET when statement param is present.
         "io.github.carlos_emr.carlos.hospitalReportManager.HRMStatementModify2Action",
         // Login gate: GET renders the selector, but selectedFacilityId is mutation intent.
