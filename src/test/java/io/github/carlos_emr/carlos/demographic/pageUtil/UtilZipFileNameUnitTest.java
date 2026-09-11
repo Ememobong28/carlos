@@ -89,11 +89,7 @@ class UtilZipFileNameUnitTest extends CarlosUnitTestBase {
     @DisplayName("neutralizes a path-like name so no separator or traversal remains")
     void shouldNeutralizeTraversal_whenNameContainsPathSegments() throws Exception {
         String result = sanitize("../secret.txt");
-        assertThat(result)
-                .isNotEmpty()
-                .doesNotContain("..")
-                .doesNotContain("/")
-                .doesNotContain("\\");
+        assertThat(result).isEqualTo("__secret.txt");
     }
 
     @Test
