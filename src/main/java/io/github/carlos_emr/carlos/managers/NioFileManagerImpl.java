@@ -401,12 +401,8 @@ public class NioFileManagerImpl implements NioFileManager {
      */
     public final boolean removeCacheVersion(LoggedInInfo loggedInInfo, final String fileName) {
 
-        // Validate input to prevent null pointer exceptions
-        if (fileName == null || fileName.trim().isEmpty()) {
-            log.error("Invalid fileName provided: null or empty");
-
         // Deleting an existing cache entry must target the caller's exact filename, so validate it as
-        // a single path component (no normalization). An invalid (non-blank) name fails loudly here —
+        // a single path component (no normalization). An invalid (including null/blank) name fails loudly here —
         // via FileValidationException, a SecurityException — rather than degrading to a silent no-op
         // that could imply a PHI preview image was cleared when it was not.
         String sanitizedFileName = PathValidationUtils.validatePathComponent(fileName, "cache filename");

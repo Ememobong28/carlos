@@ -41,6 +41,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -140,8 +141,9 @@ class NioFileManagerImplFilenameValidationUnitTest extends CarlosUnitTestBase {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"../secret.png", "..\\secret.png", ".hidden.png", "nested/secret.png"})
-    @DisplayName("removeCacheVersion (single) throws SecurityException for an invalid filename")
+    @NullAndEmptySource
+    @ValueSource(strings = {"   ", "../secret.png", "..\\secret.png", ".hidden.png", "nested/secret.png"})
+    @DisplayName("removeCacheVersion (single) throws SecurityException for a null, blank, or invalid filename")
     void shouldThrowSecurityException_forInvalidSingleRemovalFilename(String filename) {
         assertThatThrownBy(() -> nioFileManager.removeCacheVersion(loggedInInfo, filename))
                 .isInstanceOf(SecurityException.class);
