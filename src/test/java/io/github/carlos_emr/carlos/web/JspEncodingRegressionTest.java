@@ -46,6 +46,9 @@ class JspEncodingRegressionTest {
     private static final String SAFE_TEXTAREA_RENDER_PATTERN =
             "out\\.println\\(\\s*SafeEncode\\.forHtml\\(\\s*aline\\s*\\)\\s*\\);";
     private static final String RAW_TEXTAREA_RENDER_PATTERN = "out\\.println\\(\\s*aline\\s*\\);";
+    /** Matches the {@code ((String) allProviders.get(p))} scriptlet fragment CopyFavorites2.jsp repeats. */
+    private static final String ALL_PROVIDERS_ENTRY_PATTERN =
+            "\\(\\(String\\)\\s*allProviders\\.get\\(p\\)\\)";
 
     @Test
     void shouldContainEncodedSessionValues_inJavaScriptStrings() throws Exception {
@@ -298,6 +301,55 @@ class JspEncodingRegressionTest {
                 .contains("<carlos:encode value='<%= bean.reminders %>' context=\"html\"/>")
                 .contains("<carlos:encode value='<%= bean.encounter %>' context=\"html\"/>")
                 .doesNotContainPattern("<pre[^>]*>\\s*<%=\\s*bean\\.(socialHistory|familyHistory|medicalHistory|ongoingConcerns|reminders|encounter)\\s*%>");
+    }
+
+    /**
+     * Rx favorites are provider-authored free text that is replayed into form controls the next
+     * time the favorites editor is opened, so an unencoded favorite name, custom drug name or
+     * special-instruction body is a stored XSS sink. The textarea assertion matters most: a raw
+     * value there can close the element with a literal {@code </textarea>} and escape into markup.
+     */
+    @Test
+    @DisplayName("should encode Rx favorites fields in HTML and HTML attribute contexts")
+    @Tag("security")
+    void shouldEncodeRxFavoritesFields_inHtmlAndHtmlAttributeContexts() throws Exception {
+        String editFavoritesJsp = readJsp("rx/EditFavorites2.jsp");
+        String copyFavoritesJsp = readJsp("rx/CopyFavorites2.jsp");
+
+        assertThat(editFavoritesJsp)
+                .containsPattern(SAFE_ENCODE_IMPORT_PATTERN)
+                .containsPattern(safeEncodePattern("f\\.getFavoriteName\\(\\)", "forHtmlAttribute"))
+                .containsPattern(safeEncodePattern("f\\.getCustomName\\(\\)", "forHtmlAttribute"))
+                .containsPattern(safeEncodePattern("s\\.trim\\(\\)", "forHtmlContent"))
+                .doesNotContainPattern("value\\s*=\\s*\"<%=\\s*f\\.getFavoriteName\\(\\)\\s*%>\"")
+                .doesNotContainPattern("value\\s*=\\s*\"<%=\\s*f\\.getCustomName\\(\\)\\s*%>\"")
+                .doesNotContainPattern("<textarea[^>]*name=\"fldSpecial<%= i%>\"[^>]*>\\s*<%=\\s*s\\.trim\\(\\)\\s*%>");
+
+        assertThat(copyFavoritesJsp)
+                .contains("<%@ taglib uri=\"carlos\" prefix=\"carlos\" %>")
+                .containsPattern(carlosEncodePattern("providerNo", "htmlAttribute"))
+                .containsPattern(carlosEncodePattern("copyProviderNo", "htmlAttribute"))
+                .containsPattern(carlosEncodePattern(ALL_PROVIDERS_ENTRY_PATTERN, "htmlAttribute"))
+                .containsPattern(carlosEncodePattern(
+                        "providerDao\\.getProvider" + ALL_PROVIDERS_ENTRY_PATTERN + "\\.getFormattedName\\(\\)",
+                        "html"))
+                .doesNotContainPattern("value\\s*=\\s*\"<%=\\s*providerNo\\s*%>\"")
+                .doesNotContainPattern("value\\s*=\\s*\"<%=\\s*copyProviderNo\\s*%>\"")
+                .doesNotContainPattern("value\\s*=\\s*\"<%=\\s*" + ALL_PROVIDERS_ENTRY_PATTERN + "\\s*%>\"")
+                .doesNotContainPattern(
+                        ">\\s*<%=\\s*providerDao\\.getProvider" + ALL_PROVIDERS_ENTRY_PATTERN
+                                + "\\.getFormattedName\\(\\)\\s*%>")
+                // The same page renders the favorites list a second time through JSTL, and EL
+                // output is not auto-escaped in JSP, so these carry the identical stored-XSS risk
+                // as the scriptlet block above.
+                .contains("value=\"${carlos:forHtmlAttribute(fav.favoriteName)}\"")
+                .contains("value=\"${carlos:forHtmlAttribute(fav.id)}\"")
+                .contains("value=\"${carlos:forHtmlAttribute(fav.takeMin)}\"")
+                .contains("value=\"${carlos:forHtmlAttribute(fav.takeMax)}\"")
+                .contains("${carlos:forHtmlContent(fav.bn)}")
+                .contains("${carlos:forHtmlContent(fav.gn)}")
+                .doesNotContainPattern("value\\s*=\\s*\"\\$\\{fav\\.(favoriteName|id|takeMin|takeMax)\\}\"")
+                .doesNotContainPattern("<b>(Brand|Generic) Name:</b>\\s*\\$\\{fav\\.(bn|gn)\\}");
     }
 
     @Test
