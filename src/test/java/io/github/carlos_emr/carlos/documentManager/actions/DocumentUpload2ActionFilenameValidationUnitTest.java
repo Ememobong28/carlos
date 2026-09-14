@@ -168,12 +168,16 @@ class DocumentUpload2ActionFilenameValidationUnitTest extends CarlosUnitTestBase
     @DisplayName("incoming docs upload should delete allowed temp source after successful cleanup")
     void shouldDeleteAllowedTempSource_afterIncomingDocsUploadSucceeds() throws Exception {
         DocumentUpload2Action action = incomingDocsAction("report.pdf");
+        // A queue folder is now part of a well-formed incoming-docs upload: the action refuses to
+        // build a destination for a folder the allowlist does not carry.
+        request.addParameter("destFolder", "Fax");
         tempDestinationDirectory = Files.createTempDirectory("incoming-docs-target").toFile();
 
         assertThat(PathValidationUtils.isInAllowedTempDirectory(tempUploadFile)).isTrue();
 
         try (MockedStatic<IncomingDocUtil> incomingDocUtilMock = mockStatic(IncomingDocUtil.class)) {
-            incomingDocUtilMock.when(() -> IncomingDocUtil.getAndCreateIncomingDocumentFilePath(null, null))
+            incomingDocUtilMock.when(() -> IncomingDocUtil.isAllowedIncomingDocFolder("Fax")).thenReturn(true);
+            incomingDocUtilMock.when(() -> IncomingDocUtil.getAndCreateIncomingDocumentFilePath(null, "Fax"))
                     .thenReturn(tempDestinationDirectory.getPath());
 
             String result = action.executeUpload();
@@ -186,6 +190,38 @@ class DocumentUpload2ActionFilenameValidationUnitTest extends CarlosUnitTestBase
             assertThat(tempDestinationFile).exists();
             assertThat(tempUploadFile).doesNotExist();
         }
+    }
+
+    @Test
+    @DisplayName("incoming docs upload should reject a destination folder outside the allowlist")
+    void shouldRejectIncomingDocsUpload_whenDestinationFolderNotAllowed() throws Exception {
+        // Before the allowlist check moved ahead of the path build, this reached
+        // getAndCreateIncomingDocumentFilePath and came back to the uploader as an HTML 500.
+        DocumentUpload2Action action = incomingDocsAction("report.pdf");
+        request.addParameter("destFolder", "Fax/../escape");
+
+        String result = action.executeUpload();
+
+        assertThat(result).isNull();
+        assertThat(response.getContentAsString())
+                .contains("Select a valid incoming documents folder")
+                .doesNotContain("\"size\"");
+        assertThat(tempUploadFile).doesNotExist();
+    }
+
+    @Test
+    @DisplayName("incoming docs upload should reject a missing destination folder")
+    void shouldRejectIncomingDocsUpload_whenDestinationFolderMissing() throws Exception {
+        // No folder used to mean the queue root, where no incoming-docs folder lists the file.
+        DocumentUpload2Action action = incomingDocsAction("report.pdf");
+
+        String result = action.executeUpload();
+
+        assertThat(result).isNull();
+        assertThat(response.getContentAsString())
+                .contains("Select a valid incoming documents folder")
+                .doesNotContain("\"size\"");
+        assertThat(tempUploadFile).doesNotExist();
     }
 
     @Test
