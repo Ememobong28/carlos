@@ -269,6 +269,11 @@ class MutatorActionGetRejectionContractUnitTest {
         "io.github.carlos_emr.carlos.hospitalReportManager.HRMStatementModify2Action",
         // Login gate: GET renders the selector, but selectedFacilityId is mutation intent.
         "io.github.carlos_emr.carlos.login.gate.SelectFacility2Action",
+        // Login text upload: admin/uploadEntryText is dual-purpose. A GET/HEAD renders
+        // uploadEntryText.jsp (both the admin menu and the administration left-nav open it that
+        // way); only a POST -- or a GET/HEAD carrying an acceptable-use-agreement parameter -- is
+        // gated (see UploadLoginText2ActionUnitTest for the focused GET-rejection coverage).
+        "io.github.carlos_emr.carlos.login.UploadLoginText2Action",
         // Ontario billing: dual-purpose pages reject GET only when mutation-intent params exist.
         "io.github.carlos_emr.carlos.billings.ca.on.web.BatchBill2Action",
         "io.github.carlos_emr.carlos.billings.ca.on.web.BillingDocumentErrorReportUpload2Action",
@@ -410,6 +415,7 @@ class MutatorActionGetRejectionContractUnitTest {
         "io.github.carlos_emr.carlos.encounter.oscarMeasurements.pageUtil.EctMeasurements2Action",
         "io.github.carlos_emr.carlos.form.pageUtil.FrmSelect2Action",
         "io.github.carlos_emr.carlos.form.pageUtil.FrmXmlUpload2Action",
+        "io.github.carlos_emr.carlos.login.UploadLoginText2Action",
         "io.github.carlos_emr.carlos.login.gate.SelectFacility2Action",
         "io.github.carlos_emr.carlos.provider.web.DocumentDescriptionTemplate2Action",
         // eform slice: only these are registered; broader slice audit tracked in issue #2828.
