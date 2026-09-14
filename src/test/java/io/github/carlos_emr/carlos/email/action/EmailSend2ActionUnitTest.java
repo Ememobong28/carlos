@@ -36,6 +36,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import io.github.carlos_emr.carlos.commn.model.EmailLog;
 import io.github.carlos_emr.carlos.commn.model.EmailLog.EmailStatus;
 import io.github.carlos_emr.carlos.email.core.EmailData;
+import io.github.carlos_emr.carlos.email.core.EmailSendResult;
 import io.github.carlos_emr.carlos.email.core.EmailSessionKeys;
 import io.github.carlos_emr.carlos.managers.EformDataManager;
 import io.github.carlos_emr.carlos.managers.EmailComposeManager;
@@ -142,7 +143,7 @@ class EmailSend2ActionUnitTest extends CarlosUnitTestBase {
         EmailLog failure = new EmailLog();
         failure.setStatus(EmailStatus.FAILED);
         failure.setErrorMessage("Email sender account is not configured or is inactive.");
-        when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class))).thenReturn(failure);
+        when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class))).thenAnswer(invocation -> sendResult(failure));
 
         String result = newAction().execute();
 
@@ -155,7 +156,7 @@ class EmailSend2ActionUnitTest extends CarlosUnitTestBase {
         assertThat(request.getAttribute("subjectEmail")).isEqualTo("Synthetic appointment reminder");
         assertThat(request.getAttribute("demographicId")).isEqualTo("123");
         org.mockito.ArgumentCaptor<EmailData> sent = org.mockito.ArgumentCaptor.forClass(EmailData.class);
-        verify(emailManager).sendEmail(any(LoggedInInfo.class), sent.capture());
+        verify(emailManager).sendEmailWithResult(any(LoggedInInfo.class), sent.capture());
         assertThat(sent.getValue().getSenderConfigId()).isNull();
         verifyNoInteractions(eformDataManager);
     }
@@ -365,13 +366,13 @@ class EmailSend2ActionUnitTest extends CarlosUnitTestBase {
             request.setMethod("POST");
             EmailLog emailLog = new EmailLog();
             emailLog.setStatus(EmailStatus.SUCCESS);
-            when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class)))
-                .thenReturn(emailLog);
+            when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class)))
+                .thenAnswer(invocation -> sendResult(emailLog));
 
             String result = newAction().execute();
 
             assertThat(result).isEqualTo(ActionSupport.SUCCESS);
-            verify(emailManager).sendEmail(any(LoggedInInfo.class), any(EmailData.class));
+            verify(emailManager).sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class));
             assertThat(request.getAttribute("isEmailSuccessful")).isEqualTo(true);
         }
 
@@ -384,13 +385,13 @@ class EmailSend2ActionUnitTest extends CarlosUnitTestBase {
             request.setParameter("method", "sendEFormEmail");
             EmailLog emailLog = new EmailLog();
             emailLog.setStatus(EmailStatus.SUCCESS);
-            when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class)))
-                .thenReturn(emailLog);
+            when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class)))
+                .thenAnswer(invocation -> sendResult(emailLog));
 
             String result = newAction().execute();
 
             assertThat(result).isEqualTo(ActionSupport.SUCCESS);
-            verify(emailManager).sendEmail(any(LoggedInInfo.class), any(EmailData.class));
+            verify(emailManager).sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class));
             assertThat(request.getAttribute("isEmailSuccessful")).isEqualTo(true);
         }
 
@@ -403,14 +404,18 @@ class EmailSend2ActionUnitTest extends CarlosUnitTestBase {
             request.setParameter("method", "sendDirectEmail");
             EmailLog emailLog = new EmailLog();
             emailLog.setStatus(EmailStatus.SUCCESS);
-            when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class)))
-                .thenReturn(emailLog);
+            when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class)))
+                .thenAnswer(invocation -> sendResult(emailLog));
 
             String result = newAction().execute();
 
             assertThat(result).isEqualTo(ActionSupport.SUCCESS);
-            verify(emailManager).sendEmail(any(LoggedInInfo.class), any(EmailData.class));
+            verify(emailManager).sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class));
             assertThat(request.getAttribute("isEmailSuccessful")).isEqualTo(true);
         }
+    }
+    private EmailSendResult sendResult(EmailLog log) {
+        return log.getStatus() == EmailLog.EmailStatus.SUCCESS
+                ? EmailSendResult.accepted(log, true) : EmailSendResult.failed(log, true);
     }
 }

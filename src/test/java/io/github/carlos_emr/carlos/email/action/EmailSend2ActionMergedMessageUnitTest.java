@@ -43,6 +43,7 @@ import io.github.carlos_emr.carlos.commn.model.EmailLog.EmailConsentStatus;
 import io.github.carlos_emr.carlos.commn.model.EmailLog.EmailStatus;
 import io.github.carlos_emr.carlos.commn.model.enumerator.DocumentType;
 import io.github.carlos_emr.carlos.email.core.EmailData;
+import io.github.carlos_emr.carlos.email.core.EmailSendResult;
 import io.github.carlos_emr.carlos.email.core.EmailSessionKeys;
 import io.github.carlos_emr.carlos.managers.EformDataManager;
 import io.github.carlos_emr.carlos.managers.EmailComposeManager;
@@ -253,10 +254,10 @@ class EmailSend2ActionMergedMessageUnitTest extends CarlosUnitTestBase {
         when(emailComposeManager.getAllSenderAccounts())
                 .thenReturn(List.of(emailConfig, alternateEmailConfig));
         ArgumentCaptor<EmailData> sentEmail = ArgumentCaptor.forClass(EmailData.class);
-        when(emailManager.sendEmail(any(LoggedInInfo.class), sentEmail.capture())).thenAnswer(invocation -> {
+        when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), sentEmail.capture())).thenAnswer(invocation -> {
             EmailData emailData = invocation.getArgument(1);
             emailData.getAttachments().get(0).setFilePath("/tmp/encrypted-result.pdf");
-            return emailLog;
+            return sendResult(emailLog);
         });
 
         EmailSend2Action action = spy(new EmailSend2Action());
@@ -301,8 +302,8 @@ class EmailSend2ActionMergedMessageUnitTest extends CarlosUnitTestBase {
         when(emailLog.getConsentOverride()).thenReturn(true);
         when(emailLog.getConsentOverrideReason())
                 .thenReturn("Provider confirmed verbal consent");
-        when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class)))
-                .thenReturn(emailLog);
+        when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class)))
+                .thenAnswer(invocation -> sendResult(emailLog));
 
         EmailSend2Action action = spy(new EmailSend2Action());
         doReturn("SECURE_NOTICE").when(action).getText(ENCRYPTED_BODY_NOTICE_KEY);
@@ -327,7 +328,7 @@ class EmailSend2ActionMergedMessageUnitTest extends CarlosUnitTestBase {
         EmailLog emailLog = mock(EmailLog.class);
         when(emailLog.getStatus()).thenReturn(EmailStatus.FAILED);
         when(emailLog.getEmailConfig()).thenReturn(failedSender);
-        when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class))).thenReturn(emailLog);
+        when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class))).thenAnswer(invocation -> sendResult(emailLog));
         when(emailComposeManager.getAllSenderAccounts())
                 .thenThrow(new IllegalStateException("sender lookup unavailable"));
 
@@ -357,7 +358,7 @@ class EmailSend2ActionMergedMessageUnitTest extends CarlosUnitTestBase {
 
         EmailLog emailLog = mock(EmailLog.class);
         when(emailLog.getStatus()).thenReturn(EmailStatus.FAILED);
-        when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class))).thenReturn(emailLog);
+        when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class))).thenAnswer(invocation -> sendResult(emailLog));
 
         EmailSend2Action action = spy(new EmailSend2Action());
         doReturn("SECURE_NOTICE").when(action).getText(ENCRYPTED_BODY_NOTICE_KEY);
@@ -383,7 +384,7 @@ class EmailSend2ActionMergedMessageUnitTest extends CarlosUnitTestBase {
 
         EmailLog emailLog = mock(EmailLog.class);
         when(emailLog.getStatus()).thenReturn(EmailStatus.SUCCESS);
-        when(emailManager.sendEmail(any(LoggedInInfo.class), any(EmailData.class))).thenReturn(emailLog);
+        when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), any(EmailData.class))).thenAnswer(invocation -> sendResult(emailLog));
 
         EmailSend2Action action = spy(new EmailSend2Action());
         doReturn("SECURE_NOTICE").when(action).getText(ENCRYPTED_BODY_NOTICE_KEY);
@@ -524,7 +525,7 @@ class EmailSend2ActionMergedMessageUnitTest extends CarlosUnitTestBase {
         EmailLog emailLog = mock(EmailLog.class);
         when(emailLog.getStatus()).thenReturn(EmailStatus.SUCCESS);
         ArgumentCaptor<EmailData> captor = ArgumentCaptor.forClass(EmailData.class);
-        when(emailManager.sendEmail(any(LoggedInInfo.class), captor.capture())).thenReturn(emailLog);
+        when(emailManager.sendEmailWithResult(any(LoggedInInfo.class), captor.capture())).thenAnswer(invocation -> sendResult(emailLog));
 
         EmailSend2Action action = spy(new EmailSend2Action());
         // getText() has no live Struts container in a unit test, so stub the notice lookup.
@@ -535,5 +536,9 @@ class EmailSend2ActionMergedMessageUnitTest extends CarlosUnitTestBase {
         action.sendDirectEmail();
 
         return captor.getValue();
+    }
+    private EmailSendResult sendResult(EmailLog log) {
+        return log.getStatus() == EmailLog.EmailStatus.SUCCESS
+                ? EmailSendResult.accepted(log, true) : EmailSendResult.failed(log, true);
     }
 }

@@ -12,8 +12,8 @@ import org.apache.logging.log4j.Logger;
 import io.github.carlos_emr.carlos.commn.model.EmailAttachment;
 import io.github.carlos_emr.carlos.commn.model.EmailConfig;
 import io.github.carlos_emr.carlos.commn.model.EmailLog;
+import io.github.carlos_emr.carlos.email.core.EmailSendResult;
 import io.github.carlos_emr.carlos.commn.model.EmailLog.EmailConsentStatus;
-import io.github.carlos_emr.carlos.commn.model.EmailLog.EmailStatus;
 import io.github.carlos_emr.carlos.email.core.EmailData;
 import io.github.carlos_emr.carlos.email.core.EmailSessionKeys;
 import io.github.carlos_emr.carlos.managers.EformDataManager;
@@ -65,6 +65,7 @@ public class EmailSend2Action extends ActionSupport {
     HttpServletRequest request = ServletActionContext.getRequest();
     HttpServletResponse response = ServletActionContext.getResponse();
 
+    private static final String EMAIL_FOLLOW_UP_REQUIRED = "isEmailFollowUpRequired";
     private static final Logger logger = MiscUtils.getLogger();
     private EmailManager emailManager = SpringUtils.getBean(EmailManager.class);
     private transient EmailComposeManager emailComposeManager = SpringUtils.getBean(EmailComposeManager.class);
@@ -197,12 +198,22 @@ public class EmailSend2Action extends ActionSupport {
                 "true".equalsIgnoreCase(request.getParameter(PARAM_DELETE_EFORM_AFTER_EMAIL));
 
         LoggedInInfo loggedInInfo = LoggedInInfo.getLoggedInInfoFromSession(request);
-        EmailLog emailLog = sendEmail(request);
+        EmailSendResult sendResult = sendEmail(request);
+        EmailLog emailLog = sendResult.getEmailLog();
 
-        boolean isEmailSuccessful = emailLog.getStatus() == EmailStatus.SUCCESS;
+        boolean isEmailSuccessful = sendResult.isTransportAccepted();
         request.setAttribute("isEmailSuccessful", isEmailSuccessful);
+        request.setAttribute("isEmailDeliveryUnconfirmed", sendResult.isDeliveryUnconfirmed());
+        request.setAttribute("isEmailStatusRecorded", sendResult.isTransportOutcomeRecorded());
+        request.setAttribute(EMAIL_FOLLOW_UP_REQUIRED, sendResult.isFollowUpRequired());
         if (isEmailSuccessful && deleteEFormAfterEmail) {
-            eformDataManager.removeEFormData(loggedInInfo, request.getParameter("fdid"));
+            try {
+                eformDataManager.removeEFormData(loggedInInfo, request.getParameter("fdid"));
+            } catch (RuntimeException cleanupFailure) {
+                logger.error("Email accepted but eForm cleanup failed for emailLogId={}",
+                        emailLog.getId(), cleanupFailure);
+                request.setAttribute(EMAIL_FOLLOW_UP_REQUIRED, true);
+            }
         }
         request.setAttribute("isOpenEForm", request.getParameter(PARAM_OPEN_EFORM_AFTER_EMAIL));
         request.setAttribute("fdid", request.getParameter("fdid"));
@@ -229,9 +240,13 @@ public class EmailSend2Action extends ActionSupport {
      * @return String Struts2 SUCCESS result for rendering the email result page
      */
     public String sendDirectEmail() {
-        EmailLog emailLog = sendEmail(request);
-        boolean isEmailSuccessful = emailLog.getStatus() == EmailStatus.SUCCESS;
+        EmailSendResult sendResult = sendEmail(request);
+        EmailLog emailLog = sendResult.getEmailLog();
+        boolean isEmailSuccessful = sendResult.isTransportAccepted();
         request.setAttribute("isEmailSuccessful", isEmailSuccessful);
+        request.setAttribute("isEmailDeliveryUnconfirmed", sendResult.isDeliveryUnconfirmed());
+        request.setAttribute("isEmailStatusRecorded", sendResult.isTransportOutcomeRecorded());
+        request.setAttribute(EMAIL_FOLLOW_UP_REQUIRED, sendResult.isFollowUpRequired());
         request.setAttribute("emailLog", emailLog);
         if (!isEmailSuccessful) {
             preserveComposeInputsForReRender(emailLog);
@@ -372,20 +387,19 @@ public class EmailSend2Action extends ActionSupport {
      * </ul>
      *
      * @param request HttpServletRequest containing email parameters and session data
-     * @return EmailLog entity containing the result of the email send operation including
-     *         status (SUCCESS/FAILURE), timestamps, and any error messages
+     * @return result containing both the transport outcome and its associated email log
      */
-    private EmailLog sendEmail(HttpServletRequest request) {
+    private EmailSendResult sendEmail(HttpServletRequest request) {
         LoggedInInfo loggedInInfo = LoggedInInfo.getLoggedInInfoFromSession(request);
         validateMessageRequirement(request);
         validateEncryptionRequirements(request);
         validateConsentOverrideReason(request);
         EmailData emailData = prepareEmailFields(request);
-        EmailLog emailLog = emailManager.sendEmail(loggedInInfo, emailData);
-        if (emailLog.getStatus() == EmailStatus.SUCCESS) {
+        EmailSendResult result = emailManager.sendEmailWithResult(loggedInInfo, emailData);
+        if (result.isTransportAccepted()) {
             request.getSession().removeAttribute(EmailSessionKeys.EMAIL_ATTACHMENT_LIST);
         }
-        return emailLog;
+        return result;
     }
 
     /**

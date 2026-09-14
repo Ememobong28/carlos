@@ -84,6 +84,7 @@ class ManageEmails2ActionAuthorizationUnitTest extends CarlosUnitTestBase {
 
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/admin/email/resend");
         request.setParameter("logId", "42");
+        request.setParameter("method", "resendEmail");
         LoggedInInfo.setLoggedInInfoIntoSession(request.getSession(), new LoggedInInfo());
         request.getSession().setAttribute("emailPDFPassword", "stale-session-fixture");
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -92,7 +93,7 @@ class ManageEmails2ActionAuthorizationUnitTest extends CarlosUnitTestBase {
             servletActionContext.when(ServletActionContext::getRequest).thenReturn(request);
             servletActionContext.when(ServletActionContext::getResponse).thenReturn(response);
 
-            assertThat(new ManageEmails2Action().resendEmail()).isEqualTo("compose");
+            assertThat(new ManageEmails2Action().execute()).isEqualTo("compose");
         }
 
         assertThat(request.getAttribute("emailPDFPassword")).isEqualTo("");
