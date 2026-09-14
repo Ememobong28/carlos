@@ -460,6 +460,86 @@ class JspEncodingRegressionTest {
                 .contains("<carlos:encode value='<%= msgs %>' context=\"html\"/>");
     }
 
+    /**
+     * Rx prescribing screens replay clinician-entered and vendor-supplied free text: drug search
+     * results, prescription outlines, discontinue reasons, outside-provider names, allergy
+     * descriptions/reactions and provider favorite names. Favorite names in particular are accepted
+     * from the {@code favoriteName} request parameter and persisted, so an unencoded name is a
+     * stored XSS sink on every Rx screen that renders the sidebar.
+     *
+     * <p>Both sidebar variants are asserted together: {@code SideLinksEditFavorites2.jsp} is
+     * included by the write/allergy screens and {@code SideLinksNoEditFavorites*.jsp} by the
+     * read-only ones, and they render the identical values.
+     */
+    @Test
+    @DisplayName("should encode Rx prescribing and sidebar fields in HTML and HTML attribute contexts")
+    @Tag("security")
+    void shouldEncodeRxPrescribingFields_inHtmlAndHtmlAttributeContexts() throws Exception {
+        String listDrugsJsp = readJsp("rx/ListDrugs.jsp");
+        String chooseDrugJsp = readJsp("rx/ChooseDrug.jsp");
+        String selectPharmacyJsp = readJsp("rx/SelectPharmacy2.jsp");
+
+        assertThat(listDrugsJsp)
+                .containsPattern(carlosEncodePattern(
+                        "RxPrescriptionData\\.getFullOutLine\\(prescriptDrug\\.getSpecial\\(\\)\\)"
+                                + "\\.replaceAll\\(\";\", \" \"\\)",
+                        "html"))
+                .containsPattern(carlosEncodePattern("prescriptDrug\\.getArchivedReason\\(\\)", "html"))
+                .containsPattern(carlosEncodePattern("prescriptDrug\\.getOutsideProviderName\\(\\)", "html"))
+                .doesNotContainPattern(">\\s*<%=\\s*RxPrescriptionData\\.getFullOutLine\\(")
+                .doesNotContainPattern(">\\s*<%=\\s*prescriptDrug\\.getArchivedReason\\(\\)\\s*%>")
+                .doesNotContainPattern(">\\s*<%=\\s*prescriptDrug\\.getOutsideProviderName\\(\\)\\s*%>")
+                // displayDrugReason() feeds both a title attribute and HTML body, so it must pick the
+                // encoder that matches the caller's context and must never append a raw fallback code.
+                .contains("sb.append(title ? SafeEncode.forHtmlAttribute(codeDescr) : SafeEncode.forHtml(codeDescr));")
+                .contains("sb.append(title ? SafeEncode.forHtmlAttribute(drugReason.getCode())"
+                        + " : SafeEncode.forHtml(drugReason.getCode()));")
+                .doesNotContain("sb.append(drugReason.getCode());");
+
+        assertThat(chooseDrugJsp)
+                .containsPattern(SAFE_ENCODE_IMPORT_PATTERN)
+                .contains("out.write(SafeEncode.forHtmlContent(drugSearch.errorMessage));")
+                .doesNotContain("out.write(drugSearch.errorMessage);")
+                .containsPattern("title=\"" + carlosEncodePattern("t\\.name", "htmlAttribute") + "\"")
+                .containsPattern(carlosEncodePattern("getMaxVal\\(t\\.name\\)", "html"))
+                .containsPattern("title=\"" + carlosEncodePattern("brandName", "htmlAttribute") + "\"")
+                .containsPattern(carlosEncodePattern("brandName", "html"))
+                // The AFHC drug-class list renders the same search-result names as the generic and
+                // brand lists, so it has to be encoded too.
+                .containsPattern(carlosEncodePattern("t\\.name", "html"))
+                .doesNotContainPattern("title\\s*=\\s*\"<%=\\s*(?:t\\.name|brandName)\\s*%>\"")
+                .doesNotContainPattern(">\\s*<%=\\s*(?:t\\.name|brandName|getMaxVal\\(t\\.name\\))\\s*%>");
+
+        assertThat(selectPharmacyJsp)
+                .containsPattern(carlosEncodePattern("surname", "html"))
+                .containsPattern(carlosEncodePattern("firstName", "html"))
+                .doesNotContainPattern("<%=\\s*surname\\s*%>,\\s*<%=\\s*firstName\\s*%>");
+
+        for (String sidebar : List.of(
+                "rx/SideLinksEditFavorites2.jsp",
+                "rx/SideLinksNoEditFavorites.jsp",
+                "rx/SideLinksNoEditFavorites2.jsp")) {
+            assertThat(readJsp(sidebar))
+                    .as(sidebar)
+                    .contains("<%@ taglib uri=\"carlos\" prefix=\"carlos\" %>")
+                    .containsPattern(carlosEncodePattern("allergies\\[j\\]\\.getDescription\\(\\)", "htmlAttribute"))
+                    .containsPattern(carlosEncodePattern("allergies\\[j\\]\\.getReaction\\(\\)", "htmlAttribute"))
+                    .containsPattern(carlosEncodePattern(
+                            "allergies\\[j\\]\\.getShortDesc\\(13, 8, \"\\.\\.\\.\"\\)", "html"))
+                    .containsPattern(carlosEncodePattern("favorites\\[j\\]\\.getFavoriteName\\(\\)", "htmlAttribute"))
+                    .containsPattern(carlosEncodePattern("favorites\\[j\\]\\.getFavoriteName\\(\\)", "html"))
+                    .containsPattern(carlosEncodePattern(
+                            "favorites\\[j\\]\\.getFavoriteName\\(\\)\\.substring\\(0, 10\\) \\+ \"\\.\\.\\.\"", "html"))
+                    .doesNotContainPattern(
+                            "title\\s*=\\s*\"<%=\\s*allergies\\[j\\]\\.getDescription\\(\\)\\s*%>")
+                    // The negative lookbehind keeps these from matching the scriptlet inside a
+                    // <carlos:encode value='<%= ... %>'/> wrapper: only a bare sink should fail.
+                    .doesNotContainPattern("(?<!value=')<%=\\s*allergies\\[j\\]\\.getShortDesc\\(")
+                    .doesNotContainPattern("title\\s*=\\s*\"<%=\\s*favorites\\[j\\]\\.getFavoriteName\\(\\)\\s*%>\"")
+                    .doesNotContainPattern("(?<!value=')<%=\\s*favorites\\[j\\]\\.getFavoriteName\\(\\)");
+        }
+    }
+
     private static String readJsp(String relativePath) throws Exception {
         return Files.readString(JSP_ROOT.resolve(relativePath));
     }
