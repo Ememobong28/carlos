@@ -34,6 +34,7 @@ import io.github.carlos_emr.carlos.commn.model.SecRole;
 import io.github.carlos_emr.carlos.commn.model.enumerator.DocumentType;
 import io.github.carlos_emr.carlos.documentManager.ConvertToEdoc;
 import io.github.carlos_emr.carlos.documentManager.DocumentAttachmentManager;
+import io.github.carlos_emr.carlos.email.core.EmailConfigSecrets;
 import io.github.carlos_emr.carlos.email.core.EmailData;
 import io.github.carlos_emr.carlos.email.core.EmailConsentResolver;
 import io.github.carlos_emr.carlos.email.core.EmailConsentResult;
@@ -149,6 +150,7 @@ public class EmailManager {
         sanitizeEmailFields(emailData);
         EmailConsentResult consentResult = emailConsentResolver.resolve(loggedInInfo, emailData.getDemographicNo());
         EmailLog emailLog = prepareEmailForOutbox(loggedInInfo, emailData);
+        upgradeConfigCredentialsAtRest(emailLog.getEmailConfig());
         applyConsentSnapshot(emailLog, consentResult, emailData);
         logPreparedEmail(loggedInInfo, emailLog);
         if (isBlockedByConsent(consentResult, emailData)) {
@@ -175,6 +177,40 @@ public class EmailManager {
             logger.error("Failed to send email", e);
         }
         return emailLog;
+    }
+
+    /**
+     * Transparently upgrades an email configuration's transport secrets to at-rest encryption on
+     * first use (the send path), so hand-inserted plaintext {@code emailConfig.configDetails} rows
+     * are migrated the first time they are used to send.
+     *
+     * <p>The upgrade is best-effort: if the encryption key is unavailable, or the persistence of the
+     * re-encrypted row fails, the row is left as-is and the send proceeds with the existing
+     * (plaintext) value rather than blocking outbound mail. Already-encrypted rows are detected by
+     * {@link EmailConfigSecrets} and produce no database write. Neither the secret nor the raw
+     * {@code configDetails} JSON is ever logged.</p>
+     *
+     * @param emailConfig the configuration whose secrets should be encrypted at rest, may be null
+     */
+    void upgradeConfigCredentialsAtRest(EmailConfig emailConfig) {
+        if (emailConfig == null || emailConfig.getId() == null) {
+            return;
+        }
+        String original = emailConfig.getConfigDetailsJson();
+        try {
+            String encrypted = EmailConfigSecrets.encryptSecrets(original);
+            if (!java.util.Objects.equals(original, encrypted)
+                    && emailConfigDao.encryptCredentialsIfUnchanged(emailConfig.getId(), original, encrypted)) {
+                emailConfig.setConfigDetailsJson(encrypted);
+            }
+        } catch (EmailSendingException | RuntimeException e) {
+            // Best-effort: neither a missing key (EmailSendingException) nor a persistence failure
+            // (RuntimeException, e.g. DataAccessException) may block outbound mail. The detached
+            // object is changed only after persistence succeeds. The DAO binds only the account ID
+            // and encrypted JSON, never the plaintext credential, keeping database errors safe.
+            logger.warn("Unable to encrypt email transport credentials at rest for config id={}",
+                    emailConfig.getId(), e);
+        }
     }
 
     /**
@@ -633,10 +669,23 @@ public class EmailManager {
             EmailConfig emailConfig = result.getEmailConfig();
             Demographic demographic = result.getDemographic();
             Provider provider = result.getProvider();
-            EmailStatusResult emailStatusResult = new EmailStatusResult(result.getId(), result.getSubject(), emailConfig.getSenderFirstName(),
-                    emailConfig.getSenderLastName(), result.getFromEmail(), demographic.getFirstName(),
-                    demographic.getLastName(), String.join(", ", result.getToEmail()), provider.getFirstName(), provider.getLastName(),
-                    result.getIsEncrypted(), result.getPassword(), result.getStatus(), result.getErrorMessage(), result.getTimestamp());
+            // Null-guard the joined associations: an email log may legitimately have no linked
+            // demographic, provider, config, or recipient list, and an unguarded dereference would
+            // break the whole Manage Emails admin view with an NPE.
+            String senderFirstName = emailConfig != null ? emailConfig.getSenderFirstName() : "";
+            String senderLastName = emailConfig != null ? emailConfig.getSenderLastName() : "";
+            String demoFirstName = demographic != null ? demographic.getFirstName() : "";
+            String demoLastName = demographic != null ? demographic.getLastName() : "";
+            String provFirstName = provider != null ? provider.getFirstName() : "";
+            String provLastName = provider != null ? provider.getLastName() : "";
+            String toEmails = String.join(", ", result.getToEmail()); // getToEmail() is null-safe (empty array)
+            // Do NOT surface the stored PDF password in the Manage Emails view. The password stays
+            // out of the DTO by default (issue #3112); the encryption state is still shown so staff
+            // can see an email was encrypted without the credential being exposed on screen.
+            EmailStatusResult emailStatusResult = new EmailStatusResult(result.getId(), result.getSubject(), senderFirstName,
+                    senderLastName, result.getFromEmail(), demoFirstName,
+                    demoLastName, toEmails, provFirstName, provLastName,
+                    result.getIsEncrypted(), result.getStatus(), result.getErrorMessage(), result.getTimestamp());
             emailStatusResult.applyConsentSnapshot(result);
             emailStatusResults.add(emailStatusResult);
         }
