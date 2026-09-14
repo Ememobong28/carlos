@@ -21,11 +21,13 @@
  */
 package io.github.carlos_emr.carlos.login;
 
+import io.github.carlos_emr.CarlosProperties;
 import io.github.carlos_emr.carlos.PMmodule.dao.ProviderDao;
 import io.github.carlos_emr.carlos.PMmodule.dao.SecUserRoleDao;
 import io.github.carlos_emr.carlos.PMmodule.model.SecUserRole;
 import io.github.carlos_emr.carlos.commn.dao.SecurityDao;
 import io.github.carlos_emr.carlos.commn.model.Security;
+import io.github.carlos_emr.carlos.managers.MfaManager;
 import io.github.carlos_emr.carlos.log.LogAction;
 import io.github.carlos_emr.carlos.log.LogConst;
 import io.github.carlos_emr.carlos.managers.SecurityManager;
@@ -42,9 +44,11 @@ import java.util.Date;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -158,6 +162,34 @@ class LoginCheckLoginBeanUnitTest extends CarlosUnitTestBase {
     }
 
     @Test
+    @DisplayName("should reject remote login when PIN hash validation fails")
+    void shouldRejectRemoteLogin_whenPinHashValidationFails() {
+        String originalLegacyPinSetting = CarlosProperties.getInstance().getProperty(MfaManager.MFA_LEGACY_PIN_ENABLE);
+        CarlosProperties.getInstance().setProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, "true");
+        String username = "remoteUser";
+        String password = "validPassword";
+        String pin = "1234";
+        Security security = pinProtectedSecurity();
+        when(securityDao.findByUserName(username)).thenReturn(Collections.singletonList(security));
+        when(secUserRoleDao.getUserRoles(security.getProviderNo())).thenReturn(Collections.emptyList());
+        when(securityManager.validatePin(pin, security)).thenReturn(false);
+
+        try {
+            LoginCheckLoginBean bean = new LoginCheckLoginBean();
+            bean.ini(username, password, pin, "203.0.113.10");
+
+            String[] result = bean.authenticate();
+
+            assertThat(result).isNull();
+            verify(securityManager).validatePin(pin, security);
+            verify(securityManager, never()).validatePassword(any(), any());
+            verify(securityManager, never()).upgradeSavePinHash(any(), any());
+        } finally {
+            restoreProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, originalLegacyPinSetting);
+        }
+    }
+
+    @Test
     @DisplayName("should sanitize username for expired credential audit log")
     void shouldSanitizeUsername_forExpiredCredentialAuditLog() {
         String username = "expired\r\n<script>";
@@ -213,5 +245,155 @@ class LoginCheckLoginBeanUnitTest extends CarlosUnitTestBase {
         // strAuth[4] is the comma-separated session role string; the inactive admin role must be absent.
         assertThat(result).isNotNull();
         assertThat(result[4]).isEqualTo("doctor");
+    }
+
+    @Test
+    @DisplayName("should not upgrade PIN hash when password validation fails")
+    void shouldNotUpgradePinHash_whenPasswordValidationFails() {
+        String originalLegacyPinSetting = CarlosProperties.getInstance().getProperty(MfaManager.MFA_LEGACY_PIN_ENABLE);
+        CarlosProperties.getInstance().setProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, "true");
+        String username = "remoteUser";
+        String password = "wrongPassword";
+        String pin = "1234";
+        Security security = pinProtectedSecurity();
+        when(securityDao.findByUserName(username)).thenReturn(Collections.singletonList(security));
+        when(secUserRoleDao.getUserRoles(security.getProviderNo())).thenReturn(Collections.emptyList());
+        when(securityManager.validatePin(pin, security)).thenReturn(true);
+        when(securityManager.validatePassword(password, security)).thenReturn(false);
+
+        try {
+            LoginCheckLoginBean bean = new LoginCheckLoginBean();
+            bean.ini(username, password, pin, "203.0.113.10");
+
+            String[] result = bean.authenticate();
+            bean.upgradeValidatedPinIfNeeded();
+
+            assertThat(result).isNull();
+            verify(securityManager).validatePin(pin, security);
+            verify(securityManager).validatePassword(password, security);
+            verify(securityManager, never()).upgradeSavePinHash(any(), any());
+        } finally {
+            restoreProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, originalLegacyPinSetting);
+        }
+    }
+
+    @Test
+    @DisplayName("should ignore deferred PIN upgrade failure when explicitly requested")
+    void shouldIgnoreDeferredPinUpgradeFailure_whenExplicitlyRequested() {
+        String originalLegacyPinSetting = CarlosProperties.getInstance().getProperty(MfaManager.MFA_LEGACY_PIN_ENABLE);
+        CarlosProperties.getInstance().setProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, "true");
+        String username = "remoteUser";
+        String password = "validPassword";
+        String pin = "1234";
+        Security security = pinProtectedSecurity();
+        when(securityDao.findByUserName(username)).thenReturn(Collections.singletonList(security));
+        when(secUserRoleDao.getUserRoles(security.getProviderNo())).thenReturn(Collections.emptyList());
+        when(securityManager.validatePin(pin, security)).thenReturn(true);
+        when(securityManager.validatePassword(password, security)).thenReturn(true);
+        when(securityManager.isPinHashUpgradeNeeded(security)).thenReturn(true);
+        when(securityManager.upgradeSavePinHash(pin, security)).thenThrow(new RuntimeException("boom"));
+
+        try {
+            LoginCheckLoginBean bean = new LoginCheckLoginBean();
+            bean.ini(username, password, pin, "203.0.113.10");
+
+            String[] result = bean.authenticate();
+
+            assertThat(result).isNotNull();
+            bean.upgradeValidatedPinIfNeeded();
+            verify(securityManager).validatePin(pin, security);
+            verify(securityManager).validatePassword(password, security);
+            verify(securityManager).upgradeSavePinHash(pin, security);
+        } finally {
+            restoreProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, originalLegacyPinSetting);
+        }
+    }
+
+    @Test
+    @DisplayName("should upgrade PIN hash when explicitly requested after successful authentication")
+    void shouldUpgradePinHash_whenExplicitlyRequestedAfterSuccessfulAuthentication() {
+        String originalLegacyPinSetting = CarlosProperties.getInstance().getProperty(MfaManager.MFA_LEGACY_PIN_ENABLE);
+        CarlosProperties.getInstance().setProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, "true");
+        String username = "remoteUser";
+        String password = "validPassword";
+        String pin = "1234";
+        Security security = pinProtectedSecurity();
+        when(securityDao.findByUserName(username)).thenReturn(Collections.singletonList(security));
+        when(secUserRoleDao.getUserRoles(security.getProviderNo())).thenReturn(Collections.emptyList());
+        when(securityManager.validatePin(pin, security)).thenReturn(true);
+        when(securityManager.validatePassword(password, security)).thenReturn(true);
+        when(securityManager.isPinHashUpgradeNeeded(security)).thenReturn(true);
+        when(securityManager.upgradeSavePinHash(pin, security)).thenReturn(true);
+
+        try {
+            LoginCheckLoginBean bean = new LoginCheckLoginBean();
+            bean.ini(username, password, pin, "203.0.113.10");
+
+            String[] result = bean.authenticate();
+
+            assertThat(result).isNotNull();
+            bean.upgradeValidatedPinIfNeeded();
+            verify(securityManager).validatePin(pin, security);
+            verify(securityManager).validatePassword(password, security);
+            verify(securityManager).upgradeSavePinHash(pin, security);
+        } finally {
+            restoreProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, originalLegacyPinSetting);
+        }
+    }
+
+    @Test
+    @DisplayName("should authenticate remote login when PIN hash validates")
+    void shouldAuthenticateRemoteLogin_whenPinHashValidates() {
+        String originalLegacyPinSetting = CarlosProperties.getInstance().getProperty(MfaManager.MFA_LEGACY_PIN_ENABLE);
+        CarlosProperties.getInstance().setProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, "true");
+        String username = "remoteUser";
+        String password = "validPassword";
+        String pin = "1234";
+        Security security = pinProtectedSecurity();
+        when(securityDao.findByUserName(username)).thenReturn(Collections.singletonList(security));
+        when(secUserRoleDao.getUserRoles(security.getProviderNo())).thenReturn(Collections.emptyList());
+        when(securityManager.validatePin(pin, security)).thenReturn(true);
+        when(securityManager.validatePassword(password, security)).thenReturn(true);
+        // Stored PIN is already a current-strength hash, so nothing should be rewritten.
+        when(securityManager.isPinHashUpgradeNeeded(security)).thenReturn(false);
+
+        try {
+            LoginCheckLoginBean bean = new LoginCheckLoginBean();
+            bean.ini(username, password, pin, "203.0.113.10");
+
+            String[] result = bean.authenticate();
+
+            assertThat(result).isNotNull();
+            assertThat(result[0]).isEqualTo(security.getProviderNo());
+            verify(securityManager).validatePin(pin, security);
+            verify(securityManager).validatePassword(password, security);
+            verify(securityManager, never()).upgradeSavePinHash(any(), any());
+        } finally {
+            restoreProperty(MfaManager.MFA_LEGACY_PIN_ENABLE, originalLegacyPinSetting);
+        }
+    }
+
+    private Security pinProtectedSecurity() {
+        Security security = new Security();
+        security.setSecurityNo(4242);
+        security.setProviderNo("999998");
+        security.setPassword("{bcrypt}$2a$10$abcdefghijklmnopqrstuu7V7GZt1WT0fDfDJW7wZzY8ZzY8ZzY8Z");
+        // A structurally valid bcrypt hash, not a placeholder: the stored PIN reaches
+        // BCryptPasswordEncoder's parser through the hash-upgrade check, which throws on anything
+        // that is tagged {bcrypt} but not actually bcrypt-shaped.
+        security.setPin("{bcrypt}$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy");
+        security.setBLocallockset(0);
+        security.setBRemotelockset(1);
+        security.setBExpireset(0);
+        security.setUsingMfa(false);
+        return security;
+    }
+
+    private void restoreProperty(String key, String value) {
+        if (value == null) {
+            CarlosProperties.getInstance().remove(key);
+        } else {
+            CarlosProperties.getInstance().setProperty(key, value);
+        }
     }
 }
