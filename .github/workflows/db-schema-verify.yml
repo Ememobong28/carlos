@@ -16,6 +16,7 @@ on:
     paths:
       - 'database/mysql/**'
       - 'scripts/verify-outbound-archive-engines.py'
+      - 'scripts/verify-outbound-email-archive.py'
       - 'release/**'
       - 'pom.xml'
       - 'src/main/java/io/github/carlos_emr/carlos/db/FlywaySchemaValidator.java'
@@ -405,6 +406,11 @@ jobs:
           MYSQL_PWD: password
         run: python3 scripts/verify-outbound-archive-engines.py
 
+      - name: Verify archive schema, constraints, grants, and retry safety
+        env:
+          MYSQL_PWD: password
+        run: python3 scripts/verify-outbound-email-archive.py
+
   archive-engines-case-folded:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -443,3 +449,4 @@ jobs:
             exit 1
           fi
           python3 scripts/verify-outbound-archive-engines.py
+          python3 scripts/verify-outbound-email-archive.py
