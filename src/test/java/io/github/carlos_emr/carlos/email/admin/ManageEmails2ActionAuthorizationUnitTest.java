@@ -14,7 +14,7 @@ import io.github.carlos_emr.carlos.managers.EmailComposeManager;
 import io.github.carlos_emr.carlos.managers.EmailManager;
 import io.github.carlos_emr.carlos.managers.FormsManager;
 import io.github.carlos_emr.carlos.managers.SecurityInfoManager;
-import io.github.carlos_emr.carlos.test.unit.CarlosUnitTestBase;
+import io.github.carlos_emr.carlos.email.core.EmailWorkflowUnitTestBase;
 import io.github.carlos_emr.carlos.utility.LoggedInInfo;
 
 import org.apache.struts2.ServletActionContext;
@@ -48,7 +48,7 @@ import static org.mockito.Mockito.when;
 @Tag("email")
 @Tag("security")
 @DisplayName("Manage email resend authorization")
-class ManageEmails2ActionAuthorizationUnitTest extends CarlosUnitTestBase {
+class ManageEmails2ActionAuthorizationUnitTest extends EmailWorkflowUnitTestBase {
 
     @Test
     @DisplayName("should require a new password when copying an encrypted email")
@@ -96,8 +96,8 @@ class ManageEmails2ActionAuthorizationUnitTest extends CarlosUnitTestBase {
             assertThat(new ManageEmails2Action().execute()).isEqualTo("compose");
         }
 
-        assertThat(request.getAttribute("emailPDFPassword")).isEqualTo("");
-        assertThat(request.getAttribute("emailPDFPasswordClue")).isEqualTo(log.getPasswordClue());
+        assertThat(request.getAttribute("emailPDFPassword")).isEqualTo("velvet-orbit-123-cabin-river-456");
+        assertThat(request.getAttribute("emailPDFPasswordClue")).isNotEqualTo(log.getPasswordClue());
         assertThat(request.getAttribute("message")).isEqualTo("Message to copy");
         assertThat(request.getAttribute("isEmailEncrypted")).isEqualTo(true);
         assertThat(request.getAttribute("isEmailAttachmentEncrypted")).isEqualTo(true);

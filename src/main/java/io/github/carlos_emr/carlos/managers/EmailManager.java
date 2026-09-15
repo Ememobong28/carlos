@@ -38,6 +38,7 @@ import io.github.carlos_emr.carlos.documentManager.ConvertToEdoc;
 import io.github.carlos_emr.carlos.documentManager.DocumentAttachmentManager;
 import io.github.carlos_emr.carlos.email.core.EmailConfigSecrets;
 import io.github.carlos_emr.carlos.email.core.EmailData;
+import io.github.carlos_emr.carlos.email.core.EmailComposeWorkingDirectory;
 import io.github.carlos_emr.carlos.email.core.EmailSendResult;
 import io.github.carlos_emr.carlos.email.core.EmailConsentResolver;
 import io.github.carlos_emr.carlos.email.core.EmailConsentResult;
@@ -167,40 +168,49 @@ public class EmailManager {
      * consume only the log entity.</p>
      */
     public EmailSendResult sendEmailWithResult(LoggedInInfo loggedInInfo, EmailData emailData) {
-        if (!securityInfoManager.hasPrivilege(loggedInInfo, "_email", SecurityInfoManager.WRITE, null)) {
-            throw new RuntimeException("missing required sec object (_email)");
-        }
-
-        sanitizeEmailFields(emailData);
-        EmailConfig emailConfig = findActiveSenderEmailConfig(emailData);
-        if (emailConfig == null) {
-            logger.warn("Email send failed before transport: sender configuration is missing or inactive; senderConfigId={}",
-                    emailData.getSenderConfigId());
-            return EmailSendResult.failed(createFailedEmailLog(emailData, SENDER_CONFIG_MISCONFIGURATION_ERROR), false);
-        }
-        EmailConsentResult consentResult = emailConsentResolver.resolve(loggedInInfo, emailData.getDemographicNo());
-        EmailLog emailLog = prepareEmailForOutbox(loggedInInfo, emailData, emailConfig);
-        upgradeConfigCredentialsAtRest(emailLog.getEmailConfig());
-        applyConsentSnapshot(emailLog, consentResult, emailData);
-        logPreparedEmail(loggedInInfo, emailLog);
-        if (isBlockedByConsent(consentResult, emailData)) {
-            String errorMessage = getConsentBlockMessage(consentResult);
-            updateEmailStatus(loggedInInfo, emailLog, EmailStatus.BLOCKED, errorMessage);
-            LogAction.addLog(loggedInInfo, "EmailManager.sendEmail.blocked", EMAIL_AUDIT_CONTENT,
-                    "emailLogId=" + emailLog.getId() + "&consentStatus=" + consentResult.getStatus(),
-                    String.valueOf(emailLog.getDemographic().getDemographicNo()), "");
-            return EmailSendResult.failed(emailLog, true);
-        }
-
+        boolean ownsWorkingDirectory = emailData.getWorkingDirectory() == null;
         try {
-            if (emailData.getIsEncrypted()) {
-                encryptEmail(emailData);
+            if (!securityInfoManager.hasPrivilege(loggedInInfo, "_email", SecurityInfoManager.WRITE, null)) {
+                throw new RuntimeException("missing required sec object (_email)");
             }
-            EmailSender emailSender = emailSenderFactory.create(loggedInInfo, emailLog.getEmailConfig(), emailData);
-            emailSender.send();
-            return completeAcceptedSend(loggedInInfo, emailLog);
-        } catch (EmailSendingException e) {
-            return completeFailedSend(loggedInInfo, emailLog, e);
+
+            sanitizeEmailFields(emailData);
+            EmailConfig emailConfig = findActiveSenderEmailConfig(emailData);
+            if (emailConfig == null) {
+                logger.warn("Email send failed before transport: sender configuration is missing or inactive; senderConfigId={}",
+                        emailData.getSenderConfigId());
+                return EmailSendResult.failed(createFailedEmailLog(emailData, SENDER_CONFIG_MISCONFIGURATION_ERROR), false);
+            }
+            EmailConsentResult consentResult = emailConsentResolver.resolve(loggedInInfo, emailData.getDemographicNo());
+            EmailLog emailLog = prepareEmailForOutbox(loggedInInfo, emailData, emailConfig);
+            upgradeConfigCredentialsAtRest(emailLog.getEmailConfig());
+            applyConsentSnapshot(emailLog, consentResult, emailData);
+            logPreparedEmail(loggedInInfo, emailLog);
+            if (isBlockedByConsent(consentResult, emailData)) {
+                String errorMessage = getConsentBlockMessage(consentResult);
+                updateEmailStatus(loggedInInfo, emailLog, EmailStatus.BLOCKED, errorMessage);
+                LogAction.addLog(loggedInInfo, "EmailManager.sendEmail.blocked", EMAIL_AUDIT_CONTENT,
+                        "emailLogId=" + emailLog.getId() + "&consentStatus=" + consentResult.getStatus(),
+                        String.valueOf(emailLog.getDemographic().getDemographicNo()), "");
+                return EmailSendResult.failed(emailLog, true);
+            }
+
+            try {
+                if (emailData.getIsEncrypted()) {
+                    encryptEmail(emailData);
+                }
+                EmailSender emailSender = emailSenderFactory.create(loggedInInfo, emailLog.getEmailConfig(), emailData);
+                emailSender.send();
+                return completeAcceptedSend(loggedInInfo, emailLog);
+            } catch (EmailSendingException e) {
+                return completeFailedSend(loggedInInfo, emailLog, e);
+            }
+        } finally {
+            if (ownsWorkingDirectory && emailData.getWorkingDirectory() != null) {
+                emailData.getWorkingDirectory().close();
+            }
+            emailData.setPassword("");
+            emailData.setPasswordClue("");
         }
     }
 
@@ -322,6 +332,10 @@ public class EmailManager {
         }
     }
 
+    public boolean hasActiveEmailConfig(int senderConfigId) {
+        return emailConfigDao.findActiveEmailConfigById(senderConfigId) != null;
+    }
+
     /**
      * Prepares an email for sending by creating and persisting an email log entry in the outbox.
      *
@@ -363,8 +377,8 @@ public class EmailManager {
         EmailLog emailLog = new EmailLog(emailConfig, emailConfig.getSenderEmail(), emailData.getRecipients(), emailData.getSubject(), emailData.getBody(), EmailStatus.PENDING);
         setEmailAttachments(emailLog, emailData.getAttachments());
         emailLog.setEncryptedMessage(emailData.getEncryptedMessage());
-        emailLog.setPassword(emailData.getPassword());
-        emailLog.setPasswordClue(emailData.getPasswordClue());
+        emailLog.setPassword("");
+        emailLog.setPasswordClue("");
         emailLog.setIsEncrypted(emailData.getIsEncrypted());
         emailLog.setIsAttachmentEncrypted(emailData.getIsAttachmentEncrypted());
         emailLog.setChartDisplayOption(emailData.getChartDisplayOption());
@@ -397,8 +411,8 @@ public class EmailManager {
         emailLog.setStatus(EmailStatus.FAILED);
         emailLog.setErrorMessage(errorMessage);
         emailLog.setEncryptedMessage(nullToEmpty(emailData.getEncryptedMessage()));
-        emailLog.setPassword(nullToEmpty(emailData.getPassword()));
-        emailLog.setPasswordClue(nullToEmpty(emailData.getPasswordClue()));
+        emailLog.setPassword("");
+        emailLog.setPasswordClue("");
         emailLog.setIsEncrypted(emailData.getIsEncrypted());
         emailLog.setIsAttachmentEncrypted(emailData.getIsAttachmentEncrypted());
         emailLog.setChartDisplayOption(emailData.getChartDisplayOption());
@@ -811,6 +825,7 @@ public class EmailManager {
      * @throws EmailSendingException if PDF encryption fails
      */
     void encryptEmail(EmailData emailData) throws EmailSendingException {
+        ensureWorkingDirectory(emailData);
         // Encrypt message and attachment
         List<EmailAttachment> encryptableAttachments = new ArrayList<>();
         if (!StringUtils.isNullOrEmpty(emailData.getEncryptedMessage())) {
@@ -819,7 +834,7 @@ public class EmailManager {
         if (emailData.getIsAttachmentEncrypted() && !emailData.getAttachments().isEmpty()) {
             encryptableAttachments.addAll(emailData.getAttachments());
         }
-        encryptAttachments(encryptableAttachments, emailData.getPassword());
+        encryptAttachments(encryptableAttachments, emailData);
 
         List<EmailAttachment> emailAttachments = new ArrayList<>();
         emailAttachments.addAll(encryptableAttachments);
@@ -853,8 +868,13 @@ public class EmailManager {
         if (encryptedMessagePDF == null) {
             throw new EmailSendingException("Failed to render encrypted message attachment");
         }
-        return new EmailAttachment(
-                "message.pdf", encryptedMessagePDF.toString(), DocumentType.DOC, -1);
+        try {
+            encryptedMessagePDF = emailData.getWorkingDirectory().adoptGeneratedPdf(encryptedMessagePDF);
+        } catch (IOException e) {
+            logger.error("Failed to secure generated email message PDF", e);
+            throw new EmailSendingException("Failed to create encrypted email message", e);
+        }
+        return new EmailAttachment("message.pdf", encryptedMessagePDF.toString(), DocumentType.DOC, -1);
     }
 
     /**
@@ -865,21 +885,36 @@ public class EmailManager {
      * attachment metadata.
      *
      * @param encryptableAttachments List&lt;EmailAttachment&gt; the attachments to encrypt
-     * @param password String the password to protect the PDFs with
+     * @param emailData transient passphrase and working directory used to protect the PDFs
      * @throws EmailSendingException if PDF encryption fails for any attachment
      */
     // FindSecBugs PATH_TRAVERSAL_IN: path derived from trusted configuration/constant/DB value, not user-controllable input
     @SuppressFBWarnings(value = "PATH_TRAVERSAL_IN", justification = "path derived from trusted configuration/constant/DB value, not user-controllable input")
-    private void encryptAttachments(List<EmailAttachment> encryptableAttachments, String password) throws EmailSendingException {
+    private void encryptAttachments(
+            List<EmailAttachment> encryptableAttachments,
+            EmailData emailData
+    ) throws EmailSendingException {
         for (EmailAttachment attachment : encryptableAttachments) {
             try {
                 Path attachmentPDFPath = PathValidationUtils.resolveTrustedPath(new File(attachment.getFilePath())).toPath();
-                attachmentPDFPath = PDFEncryptionUtil.encryptPDF(attachmentPDFPath, password);
+                attachmentPDFPath = PDFEncryptionUtil.encryptPDF(attachmentPDFPath, emailData.getPassword());
+                attachmentPDFPath = emailData.getWorkingDirectory().adoptGeneratedPdf(attachmentPDFPath);
                 attachment.setFilePath(attachmentPDFPath.toString());
             } catch (IOException e) {
                 logger.error("Failed to create encrypted email attachments", e);
                 throw new EmailSendingException("Failed to create encrypted email attachments", e);
             }
+        }
+    }
+
+    private static void ensureWorkingDirectory(EmailData emailData) throws EmailSendingException {
+        if (emailData.getWorkingDirectory() != null) {
+            return;
+        }
+        try {
+            emailData.setWorkingDirectory(EmailComposeWorkingDirectory.create());
+        } catch (IOException e) {
+            throw new EmailSendingException("Unable to create secure email working directory", e);
         }
     }
 

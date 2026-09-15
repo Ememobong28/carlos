@@ -26,7 +26,7 @@ import io.github.carlos_emr.carlos.managers.EmailComposeManager;
 import io.github.carlos_emr.carlos.managers.EmailManager;
 import io.github.carlos_emr.carlos.managers.FormsManager;
 import io.github.carlos_emr.carlos.managers.SecurityInfoManager;
-import io.github.carlos_emr.carlos.test.unit.CarlosUnitTestBase;
+import io.github.carlos_emr.carlos.email.core.EmailWorkflowUnitTestBase;
 import io.github.carlos_emr.carlos.utility.LoggedInInfo;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,7 +41,7 @@ import static org.mockito.Mockito.when;
 @Tag("fast")
 @Tag("email")
 @DisplayName("ManageEmails2Action")
-class ManageEmails2ActionUnitTest extends CarlosUnitTestBase {
+class ManageEmails2ActionUnitTest extends EmailWorkflowUnitTestBase {
 
     private MockedStatic<ServletActionContext> servletActionContextMock;
     private MockHttpServletRequest request;
@@ -56,7 +56,7 @@ class ManageEmails2ActionUnitTest extends CarlosUnitTestBase {
 
     @BeforeEach
     void setUp() {
-        request = new MockHttpServletRequest();
+        request = new MockHttpServletRequest("POST", "/admin/ManageEmails");
         response = new MockHttpServletResponse();
         demographicManager = mock(DemographicManager.class);
         emailComposeManager = mock(EmailComposeManager.class);
@@ -86,6 +86,19 @@ class ManageEmails2ActionUnitTest extends CarlosUnitTestBase {
         if (servletActionContextMock != null) {
             servletActionContextMock.close();
         }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"GET", "HEAD"})
+    void shouldRejectCopy_withoutPost(String method) {
+        request.setMethod(method);
+        request.setParameter("method", "resendEmail");
+        request.setParameter("logId", "42");
+        assertThat(new ManageEmails2Action().execute()).isEqualTo("none");
+        assertThat(response.getStatus()).isEqualTo(405);
+        assertThat(response.getHeader("Allow")).isEqualTo("POST");
+        verifyNoInteractions(emailComposeManager, demographicManager, documentAttachmentManager,
+                emailManager, formsManager, securityInfoManager);
     }
 
     @Test

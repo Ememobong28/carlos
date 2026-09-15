@@ -37,7 +37,7 @@ import io.github.carlos_emr.carlos.email.core.EmailSendResult;
 import io.github.carlos_emr.carlos.managers.EformDataManager;
 import io.github.carlos_emr.carlos.managers.EmailManager;
 import io.github.carlos_emr.carlos.managers.SecurityInfoManager;
-import io.github.carlos_emr.carlos.test.unit.CarlosUnitTestBase;
+import io.github.carlos_emr.carlos.email.core.EmailWorkflowUnitTestBase;
 import io.github.carlos_emr.carlos.utility.LoggedInInfo;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,7 +58,7 @@ import static org.mockito.Mockito.when;
 @Tag("fast")
 @Tag("email")
 @DisplayName("EmailSend2Action")
-class EmailSendOutcomeUnitTest extends CarlosUnitTestBase {
+class EmailSendOutcomeUnitTest extends EmailWorkflowUnitTestBase {
 
     private MockedStatic<ServletActionContext> servletActionContextMock;
     private SecurityInfoManager securityInfoManager;
@@ -116,6 +116,7 @@ class EmailSendOutcomeUnitTest extends CarlosUnitTestBase {
         when(emailManager.sendEmailWithResult(eq(loggedInInfo), any(EmailData.class)))
                 .thenReturn(EmailSendResult.accepted(resolvedLog, false));
 
+        prepareSubmission(request);
         EmailSend2Action action = new EmailSend2Action();
         action.request = request;
         action.response = new MockHttpServletResponse();
@@ -153,6 +154,7 @@ class EmailSendOutcomeUnitTest extends CarlosUnitTestBase {
         when(emailManager.sendEmailWithResult(eq(loggedInInfo), any(EmailData.class)))
                 .thenReturn(EmailSendResult.unconfirmed(resolvedLog));
 
+        prepareSubmission(request);
         EmailSend2Action action = new EmailSend2Action();
         action.request = request;
         action.response = new MockHttpServletResponse();
@@ -195,6 +197,7 @@ class EmailSendOutcomeUnitTest extends CarlosUnitTestBase {
 
         doThrow(new IllegalStateException("cleanup unavailable"))
                 .when(eformDataManager).removeEFormData(loggedInInfo, "42");
+        prepareSubmission(request);
         EmailSend2Action action = new EmailSend2Action();
         action.request = request;
         action.response = new MockHttpServletResponse();
