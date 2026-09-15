@@ -66,6 +66,27 @@ class JspEncodingRegressionTest {
     }
 
     /**
+     * {@code /closenreload} is reachable before authentication and copies {@code parentAjaxId}
+     * straight off the query string into a JavaScript string literal. The legacy {@code forHtml}
+     * alias encoded it for the wrong sink: HTML entities are not decoded inside {@code <script>},
+     * so it only held because {@code &quot;} happens to be inert there, while backslashes and line
+     * terminators passed through unescaped and could still corrupt the literal. {@code javaScript}
+     * encodes for the sink that actually parses the value. Pin the context so the alias cannot be
+     * reintroduced here.
+     */
+    @Test
+    @DisplayName("should encode closenreload parentAjaxId in the JavaScript string context")
+    @Tag("security")
+    void shouldEncodeParentAjaxId_inCloseNReloadJavaScriptString() throws Exception {
+        String closeNReloadJsp = readJsp("common/closenreload.jsp");
+
+        assertThat(closeNReloadJsp)
+                .contains("const parentAjaxId = \"<carlos:encode value='${parentAjaxId}' context=\"javaScript\"/>\";")
+                .doesNotContain("context=\"forHtml\"")
+                .doesNotContain("context='forHtml'");
+    }
+
+    /**
      * Password-policy character groups are configuration-driven, so they reach the browser as JSP
      * scriptlet output inside JavaScript string literals. They must use the CARLOS null-safe
      * encoder rather than Spring's {@code JavaScriptUtils.javaScriptEscape(...)}: an unset
