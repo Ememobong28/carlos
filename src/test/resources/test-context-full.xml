@@ -695,4 +695,6 @@
         <property name="programAccessDAO" ref="programAccessDAO" />
     </bean>
 
+    <!-- Real transaction boundary for archive read audit integration tests. -->
+    <bean class="io.github.carlos_emr.carlos.managers.OutboundEmailArchiveReadAuditService" autowire="constructor" />
 </beans>
