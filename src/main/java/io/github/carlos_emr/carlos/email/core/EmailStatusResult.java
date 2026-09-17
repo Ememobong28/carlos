@@ -45,6 +45,7 @@ public class EmailStatusResult implements Comparable<EmailStatusResult> {
     private EmailStatus status;
     private String errorMessage;
     private Date created;
+    private boolean resolvable;
     private EmailConsentStatus consentStatus;
     private Integer consentId;
     private Date consentLastUpdateDate;
@@ -168,7 +169,7 @@ public class EmailStatusResult implements Comparable<EmailStatusResult> {
     }
 
     /**
-     * Gets the sender's full name formatted as "FirstName LastName" in camel case.
+     * Gets the sender's full name formatted as "FirstName LastName" with name capitalization.
      *
      * @return String the formatted sender's full name
      */
@@ -242,7 +243,7 @@ public class EmailStatusResult implements Comparable<EmailStatusResult> {
     }
 
     /**
-     * Gets the recipient's full name formatted as "FirstName LastName" in camel case.
+     * Gets the recipient's full name formatted as "FirstName LastName" with name capitalization.
      *
      * @return String the formatted recipient's full name
      */
@@ -298,13 +299,13 @@ public class EmailStatusResult implements Comparable<EmailStatusResult> {
     }
 
     /**
-     * Gets the provider's full name formatted as "LastName, FirstName" in camel case.
+     * Gets the provider's full name formatted as "LastName, FirstName" with name capitalization.
      *
      * @return String the formatted provider's full name
      */
     public String getProviderFullName() {
-        String firstName = toCamelCase(providerFirstName);
-        String lastName = toCamelCase(providerLastName);
+        String firstName = formatNamePart(providerFirstName);
+        String lastName = formatNamePart(providerLastName);
         if (firstName.isEmpty()) {
             return lastName;
         }
@@ -490,6 +491,18 @@ public class EmailStatusResult implements Comparable<EmailStatusResult> {
     }
 
     /**
+     * Indicates whether the current status may be manually resolved. Fresh PENDING records are
+     * intentionally not actionable while their transport request may still be running.
+     */
+    public boolean isResolvable() {
+        return resolvable;
+    }
+
+    public void setResolvable(boolean resolvable) {
+        this.resolvable = resolvable;
+    }
+
+    /**
      * Gets the creation date formatted as "yyyy-MM-dd".
      *
      * @return String the formatted creation date
@@ -523,26 +536,25 @@ public class EmailStatusResult implements Comparable<EmailStatusResult> {
         return createdLocalDateTime.format(formatter);
     }
 
-    /**
-     * Converts a string to Title Case format (first letter uppercase, rest lowercase).
-     *
-     * <p><strong>Note:</strong> Despite the method name, this produces Title Case
-     * (e.g., "Firstname") rather than true camelCase (e.g., "firstName"). This is
-     * the expected behavior for formatting person names in this class.</p>
-     *
-     * @param inputString String the input string to convert
-     * @return String the Title Case formatted string
-     */
-    private String toCamelCase(String inputString) {
-        if (inputString == null || inputString.isEmpty()) {
+    /** Formats a legal name part while preserving the original spelling of a parenthesized alias. */
+    private String formatNamePart(String value) {
+        if (value == null || value.isBlank()) {
             return "";
         }
-        return Character.toUpperCase(inputString.charAt(0)) + inputString.substring(1).toLowerCase();
+        String name = value.trim();
+        if (name.startsWith("(") && name.endsWith(")")) {
+            return name;
+        }
+        int aliasStart = name.indexOf(" (");
+        if (aliasStart > 0 && name.endsWith(")")) {
+            return formatNamePart(name.substring(0, aliasStart)) + name.substring(aliasStart);
+        }
+        return Character.toUpperCase(name.charAt(0)) + name.substring(1).toLowerCase(java.util.Locale.ROOT);
     }
 
     private String formatFirstNameLastName(String firstName, String lastName) {
-        String formattedFirstName = toCamelCase(firstName);
-        String formattedLastName = toCamelCase(lastName);
+        String formattedFirstName = formatNamePart(firstName);
+        String formattedLastName = formatNamePart(lastName);
         if (formattedFirstName.isEmpty()) {
             return formattedLastName;
         }
