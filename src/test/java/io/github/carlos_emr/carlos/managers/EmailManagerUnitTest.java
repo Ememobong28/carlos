@@ -97,6 +97,7 @@ class EmailManagerUnitTest extends CarlosUnitTestBase {
         originalKey = EncryptionKeyTestSupport.seedFreshKey();
         emailConfigDao = mock(EmailConfigDaoImpl.class);
         emailLogDao = mock(EmailLogDaoImpl.class);
+        when(emailLogDao.transitionEmailStatus(any(), any(), any(), any(), any())).thenReturn(1);
         demographicManager = mock(DemographicManager.class);
         providerManager = mock(ProviderManager2.class);
         securityInfoManager = mock(SecurityInfoManager.class);
@@ -104,13 +105,12 @@ class EmailManagerUnitTest extends CarlosUnitTestBase {
         emailSenderFactory = mock(EmailSenderFactory.class);
         emailSender = mock(EmailSender.class);
         loggedInInfo = new LoggedInInfo();
-        emailManager = new EmailManager(emailConsentResolver, emailSenderFactory);
+        emailManager = new EmailManager(emailConsentResolver, emailSenderFactory, securityInfoManager, mock(OutboundEmailArchiveService.class));
 
         injectDependency(emailManager, "emailConfigDao", emailConfigDao);
         injectDependency(emailManager, "emailLogDao", emailLogDao);
         injectDependency(emailManager, "demographicManager", demographicManager);
         injectDependency(emailManager, "providerManager", providerManager);
-        injectDependency(emailManager, "securityInfoManager", securityInfoManager);
         when(securityInfoManager.hasPrivilege(
                 loggedInInfo, "_email", SecurityInfoManager.WRITE, null)).thenReturn(true);
         when(emailConfigDao.findActiveEmailConfigById(10)).thenReturn(emailConfig());
@@ -137,8 +137,8 @@ class EmailManagerUnitTest extends CarlosUnitTestBase {
         assertThat(emailLog.getConsentId()).isEqualTo(55);
         verify(emailLogDao).persist(any(EmailLog.class));
         verify(emailLogDao).merge(emailLog);
-        verify(emailLogDao).updateEmailStatus(
-                eq(emailLog.getId()), eq(EmailStatus.BLOCKED), any(), any(Date.class));
+        verify(emailLogDao).transitionEmailStatus(
+                eq(emailLog.getId()), eq(EmailStatus.PENDING), eq(EmailStatus.BLOCKED), any(), any(Date.class));
         verifyNoInteractions(emailSenderFactory, emailSender);
     }
 
@@ -244,9 +244,9 @@ class EmailManagerUnitTest extends CarlosUnitTestBase {
         assertThat(emailLog.getConsentOverride()).isTrue();
         assertThat(emailLog.getConsentOverrideReason())
                 .isEqualTo("Patient verbally confirmed email consent");
-        verify(emailSender).send();
-        verify(emailLogDao).updateEmailStatus(
-                eq(emailLog.getId()), eq(EmailStatus.SUCCESS), eq(""), any(Date.class));
+        verify(emailSender).sendPrepared();
+        verify(emailLogDao).transitionEmailStatus(
+                eq(emailLog.getId()), eq(EmailStatus.PENDING), eq(EmailStatus.SUCCESS), eq(""), any(Date.class));
     }
 
     @Test
@@ -268,7 +268,7 @@ class EmailManagerUnitTest extends CarlosUnitTestBase {
         assertThat(repeatedAttempt.getConsentStatus()).isEqualTo(EmailConsentStatus.OPT_OUT);
         verify(emailConsentResolver, times(2)).resolve(loggedInInfo, 123);
         verify(emailSenderFactory).create(any(), any(), any());
-        verify(emailSender).send();
+        verify(emailSender).sendPrepared();
     }
 
     @Test
@@ -290,7 +290,7 @@ class EmailManagerUnitTest extends CarlosUnitTestBase {
         assertThat(emailLog.getStatus()).isEqualTo(EmailStatus.SUCCESS);
         verify(emailConfigDao).encryptCredentialsIfUnchanged(eq(10), eq("{\"password\":\"smtp-secret\"}"), any());
         verify(emailSenderFactory).create(any(), same(config), any());
-        verify(emailSender).send();
+        verify(emailSender).sendPrepared();
         assertPasswordDecrypts(config, "smtp-secret");
     }
 
