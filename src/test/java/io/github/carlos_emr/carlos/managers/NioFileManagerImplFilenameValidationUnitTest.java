@@ -149,13 +149,15 @@ class NioFileManagerImplFilenameValidationUnitTest extends CarlosUnitTestBase {
                 .isInstanceOf(SecurityException.class);
     }
 
-    @Test
-    @DisplayName("removeCacheVersions fails loudly for an invalid filename instead of reporting 0 cleared")
-    void shouldThrowSecurityException_forInvalidFlushFilename() throws IOException {
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"   ", "../secret.pdf", "..\\secret.pdf", ".hidden.pdf", "nested/secret.pdf"})
+    @DisplayName("removeCacheVersions fails loudly for a null, blank, or invalid filename instead of reporting 0 cleared")
+    void shouldThrowSecurityException_forInvalidFlushFilename(String filename) throws IOException {
         Path allowedSource = createApplicationTempDirectory();
         try {
             assertThatThrownBy(() ->
-                    nioFileManager.removeCacheVersions(loggedInInfo, allowedSource.toString(), "../secret.pdf"))
+                    nioFileManager.removeCacheVersions(loggedInInfo, allowedSource.toString(), filename))
                     .isInstanceOf(SecurityException.class);
         } finally {
             Files.deleteIfExists(allowedSource);
