@@ -459,6 +459,10 @@ public class NioFileManagerImpl implements NioFileManager {
      *         root. A PHI flush that cannot even identify which cache pages belong to its source must
      *         not silently report "0 removed" as if nothing needed clearing; the caller
      *         ({@code FaxManagerImpl.flush}) treats this as an uncleared cache.
+     * @throws io.github.carlos_emr.carlos.utility.FileValidationException (a {@link SecurityException})
+     *         when {@code filename} is null, blank, or not a single valid path component — same
+     *         fail-loud reason as an unkeyable source: the page prefix is underivable, so "0 removed"
+     *         would misreport an uncleared PHI cache.
      */
     @Override
     // FindSecBugs PATH_TRAVERSAL_IN: each candidate is confined to the cache directory via
@@ -466,9 +470,6 @@ public class NioFileManagerImpl implements NioFileManager {
     // preview location and the key derives from that validated path plus server config.
     @SuppressFBWarnings(value = "PATH_TRAVERSAL_IN", justification = "path validated for directory containment via PathValidationUtils before use")
     public final int removeCacheVersions(LoggedInInfo loggedInInfo, String sourceDirectory, String filename) throws IOException {
-        if (filename == null || filename.trim().isEmpty()) {
-            return 0;
-        }
         // No _edoc gate: the only caller (FaxManagerImpl.flush) is already authorized by _fax READ and
         // this removes only that preview's own regenerable page-image cache. Requiring _edoc here broke
         // the fax-cancel/flush flow for users holding _fax READ but not _edoc READ, throwing before the
