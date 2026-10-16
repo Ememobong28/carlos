@@ -3,12 +3,16 @@ package io.github.carlos_emr.carlos.email.action;
 import java.io.IOException;
 import java.nio.file.Path;
 
+import io.github.carlos_emr.carlos.integration.patientportal.PatientPortalConfigurationException;
+import io.github.carlos_emr.carlos.integration.patientportal.PortalEmailDeliveryService;
 import io.github.carlos_emr.carlos.documentManager.PdfPreviewCapabilityService;
 import io.github.carlos_emr.carlos.email.core.EmailComposeWorkingDirectory;
 import io.github.carlos_emr.carlos.email.core.EmailPdfPasswordService;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -19,6 +23,8 @@ import io.github.carlos_emr.carlos.commn.model.EmailConfig;
 import io.github.carlos_emr.carlos.commn.model.EmailLog;
 import io.github.carlos_emr.carlos.email.core.EmailSendResult;
 import io.github.carlos_emr.carlos.commn.model.EmailLog.EmailConsentStatus;
+import io.github.carlos_emr.carlos.commn.model.enumerator.DocumentType;
+import io.github.carlos_emr.carlos.documentManager.AttachmentOwnershipService;
 import io.github.carlos_emr.carlos.email.core.EmailData;
 import io.github.carlos_emr.carlos.email.core.EmailComposeSubmissionStateService;
 import io.github.carlos_emr.carlos.email.core.EmailComposeSubmissionStateService.EmailComposeSubmissionContext;
@@ -46,7 +52,8 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
  *   <li>Sending emails directly with healthcare data and attachments</li>
  *   <li>Sending electronic forms (EForms) via email with optional deletion after send</li>
  *   <li>Handling email encryption and password protection for PHI compliance</li>
- *   <li>Managing email attachments from session storage</li>
+ *   <li>Sending exactly the attachments its own compose window staged, and only when every one
+ *       belongs to the email's patient (#4425)</li>
  *   <li>Canceling email operations and redirecting to source contexts</li>
  * </ul>
  *
@@ -75,6 +82,8 @@ public class EmailSend2Action extends ActionSupport {
     HttpServletResponse response = ServletActionContext.getResponse();
 
     private static final String EMAIL_FOLLOW_UP_REQUIRED = "isEmailFollowUpRequired";
+    /** Which address the mail server refused ("RECIPIENT", "SENDER" or "NONE"), for the result page hint. */
+    private static final String EMAIL_REFUSAL = "emailRefusal";
     private static final Logger logger = MiscUtils.getLogger();
     private EmailManager emailManager = SpringUtils.getBean(EmailManager.class);
     private transient EmailComposeManager emailComposeManager = SpringUtils.getBean(EmailComposeManager.class);
@@ -101,6 +110,32 @@ public class EmailSend2Action extends ActionSupport {
     private transient EmailPdfPasswordService emailPdfPasswordService = SpringUtils.getBean(EmailPdfPasswordService.class);
     private transient PdfPreviewCapabilityService pdfPreviewCapabilityService = SpringUtils.getBean(PdfPreviewCapabilityService.class);
     private static final int MAXIMUM_MESSAGE_LENGTH = 10_000;
+
+    private final transient AttachmentOwnershipService attachmentOwnershipService;
+
+    /**
+     * Shown when the send is refused because an attachment bound to this window's compose state
+     * does not belong to that state's patient (#4425). A window whose state is gone (already sent,
+     * cancelled or expired) is reported with
+     * {@link EmailCompose2Action#EMAIL_COMPOSE_STATE_EXPIRED_MESSAGE} instead. Either way nothing
+     * is sent and nothing is logged as sent.
+     */
+    static final String ATTACHMENTS_REFUSED_MESSAGE = "This email was not sent: this window has expired,"
+            + " or its attachments do not belong to this patient. Close it and start the email again.";
+
+    /** Struts-created: resolves the ownership check from Spring. */
+    public EmailSend2Action() {
+        this(SpringUtils.getBean(AttachmentOwnershipService.class));
+    }
+
+    /**
+     * Test constructor.
+     *
+     * @param attachmentOwnershipService re-reads each attachment's owning patient before a send
+     */
+    EmailSend2Action(AttachmentOwnershipService attachmentOwnershipService) {
+        this.attachmentOwnershipService = attachmentOwnershipService;
+    }
 
     /**
      * Main execution method that routes to specific email handling methods based on the "method" request parameter.
@@ -221,6 +256,7 @@ public class EmailSend2Action extends ActionSupport {
                 context = composeState.context();
                 ensureSendCapable(composeState);
                 ensureTransactionType(composeState, EmailLog.TransactionType.EFORM);
+                verifyAttachmentOwnership(composeState);
                 sendResult = sendEmail(request, composeState);
                 if (!sendResult.isTransportAccepted() && !sendResult.isDeliveryUnconfirmed()) {
                     prepareRetry(composeState, sendResult.getEmailLog());
@@ -236,6 +272,7 @@ public class EmailSend2Action extends ActionSupport {
         request.setAttribute("isEmailDeliveryUnconfirmed", sendResult.isDeliveryUnconfirmed());
         request.setAttribute("isEmailStatusRecorded", sendResult.isTransportOutcomeRecorded());
         request.setAttribute(EMAIL_FOLLOW_UP_REQUIRED, sendResult.isFollowUpRequired());
+        request.setAttribute(EMAIL_REFUSAL, sendResult.getRefusal().name());
         if (isEmailSuccessful && context.deleteEFormAfterEmail() && StringUtils.filled(context.fdid())) {
             try {
                 eformDataManager.removeEFormData(loggedInInfo, context.fdid());
@@ -279,6 +316,7 @@ public class EmailSend2Action extends ActionSupport {
                 context = composeState.context();
                 ensureSendCapable(composeState);
                 ensureTransactionType(composeState, EmailLog.TransactionType.DIRECT);
+                verifyAttachmentOwnership(composeState);
                 sendResult = sendEmail(request, composeState);
                 if (!sendResult.isTransportAccepted() && !sendResult.isDeliveryUnconfirmed()) {
                     prepareRetry(composeState, sendResult.getEmailLog());
@@ -293,6 +331,7 @@ public class EmailSend2Action extends ActionSupport {
         request.setAttribute("isEmailDeliveryUnconfirmed", sendResult.isDeliveryUnconfirmed());
         request.setAttribute("isEmailStatusRecorded", sendResult.isTransportOutcomeRecorded());
         request.setAttribute(EMAIL_FOLLOW_UP_REQUIRED, sendResult.isFollowUpRequired());
+        request.setAttribute(EMAIL_REFUSAL, sendResult.getRefusal().name());
         request.setAttribute("emailLog", emailLog);
         return SUCCESS;
     }
@@ -592,6 +631,14 @@ public class EmailSend2Action extends ActionSupport {
             throw new EmailSendValidationException(
                     "Attachment encryption requires message encryption");
         }
+        if (encrypted) {
+            try {
+                PortalEmailDeliveryService.isEnabled();
+            } catch (PatientPortalConfigurationException malformed) {
+                // Refuse here, before the compose state is consumed, so the draft survives.
+                throw new EmailSendValidationException(getText("email.compose.portal.misconfigured"));
+            }
+        }
     }
 
     /**
@@ -619,6 +666,67 @@ public class EmailSend2Action extends ActionSupport {
     }
 
     /**
+     * Verifies that every attachment bound to this window's compose state belongs to the patient
+     * that state was prepared for (#4425).
+     *
+     * <p>The attachments and the patient both come from the one-time submission state, never from
+     * the request, so a compose or resend in another window cannot change what this one sends, and
+     * a forged {@code demographicId} cannot redirect them. This re-reads each eForm, document, lab
+     * and HRM attachment's owner through {@link AttachmentOwnershipService} immediately before the
+     * send, so a record that no longer belongs to the patient is never disclosed. Encounter-form
+     * ({@link DocumentType#FORM}) attachments have no common owner column to check; they were
+     * rendered server-side for the bound patient.</p>
+     *
+     * <p>The caller has already consumed the state, so a refused window cannot be retried into
+     * sending. Nothing is sent and no {@link EmailLog} is written.</p>
+     *
+     * @param composeState the consumed compose state whose attachments are about to be sent
+     * @throws EmailComposeStateException with {@link #ATTACHMENTS_REFUSED_MESSAGE} when an
+     *         attachment has no document type, the bound patient cannot be read, or any record
+     *         belongs to another patient
+     */
+    private void verifyAttachmentOwnership(EmailComposeSubmissionState composeState) {
+        List<EmailAttachment> attachments = composeState.emailAttachmentList();
+        if (attachments == null || attachments.isEmpty()) {
+            return;
+        }
+        Map<DocumentType, List<Integer>> idsByType = new EnumMap<>(DocumentType.class);
+        for (EmailAttachment attachment : attachments) {
+            DocumentType type = attachment.getDocumentType();
+            if (type == null) {
+                logger.warn("Email send refused: an attachment has no document type");
+                throw new EmailComposeStateException(ATTACHMENTS_REFUSED_MESSAGE);
+            }
+            if (type != DocumentType.FORM) {
+                idsByType.computeIfAbsent(type, t -> new ArrayList<>()).add(attachment.getDocumentId());
+            }
+        }
+        if (idsByType.isEmpty()) {
+            return;
+        }
+        Integer demographicNo = parseDemographicNo(composeState.context().demographicId());
+        if (demographicNo == null) {
+            logger.warn("Email send refused: the compose state has no patient to verify its attachments against");
+            throw new EmailComposeStateException(ATTACHMENTS_REFUSED_MESSAGE);
+        }
+        if (!attachmentOwnershipService.allBelongToDemographic(idsByType, demographicNo)) {
+            logger.warn("Email send refused: an attachment does not belong to the email's patient");
+            throw new EmailComposeStateException(ATTACHMENTS_REFUSED_MESSAGE);
+        }
+    }
+
+    private static Integer parseDemographicNo(String demographicId) {
+        if (demographicId == null) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(demographicId.trim());
+        } catch (NumberFormatException _) {
+            return null;
+        }
+    }
+
+    /**
      * Extracts and prepares email data from HTTP request parameters and session attributes.
      *
      * <p>This private helper method performs comprehensive email data preparation including:</p>
@@ -629,7 +737,8 @@ public class EmailSend2Action extends ActionSupport {
      *   <li>Resolving server-generated PDF password protection values</li>
      *   <li>Retrieving patient chart display options and demographic information</li>
      *   <li>Extracting transaction type and additional URL parameters</li>
-     *   <li>Retrieving email attachments from tokenized server-side compose state</li>
+     *   <li>Retrieving email attachments from tokenized server-side compose state, after
+     *       {@link #verifyAttachmentOwnership} has checked them against its patient (#4425)</li>
      *   <li>Consuming the compose submission token so draft secrets are not reused</li>
      * </ul>
      *
@@ -637,6 +746,8 @@ public class EmailSend2Action extends ActionSupport {
      * emails with specific healthcare providers and patients for audit trail purposes.</p>
      *
      * @param request HttpServletRequest containing email form parameters and session data
+     * @param composeState the consumed compose state; its attachments, password and patient context
+     *        are never read from the request or a session-wide attribute
      * @return EmailData populated data transfer object containing all email parameters
      *         ready for processing by EmailManager
      */
@@ -754,7 +865,7 @@ public class EmailSend2Action extends ActionSupport {
             EmailComposeSubmissionState composeState,
             boolean needsPdfPassword
     ) {
-        if (!needsPdfPassword) {
+        if (!needsPdfPassword || PortalEmailDeliveryService.isEnabled()) {
             return "";
         }
 
@@ -817,6 +928,9 @@ public class EmailSend2Action extends ActionSupport {
      * @return the localized secure-message notice for the encrypted email body
      */
     protected String encryptedBodyNotice() {
-        return getText("email.compose.msg.encryptedBodyNotice");
+        // With portal delivery the patient finds the password in the portal, not a separate channel.
+        return getText(PortalEmailDeliveryService.isEnabled()
+                ? "email.compose.msg.portalPasswordBodyNotice"
+                : "email.compose.msg.encryptedBodyNotice");
     }
 }
