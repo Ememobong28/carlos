@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import jakarta.servlet.ServletContext;
 
@@ -34,6 +35,8 @@ import io.github.carlos_emr.CarlosProperties;
 import io.github.carlos_emr.carlos.test.unit.CarlosUnitTestBase;
 import io.github.carlos_emr.carlos.utility.LoggedInInfo;
 import io.github.carlos_emr.carlos.utility.PathValidationUtils;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -88,9 +91,11 @@ class NioFileManagerImplFilenameValidationUnitTest extends CarlosUnitTestBase {
     private String originalBaseDocumentDir;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws IOException {
         originalBaseDocumentDir = CarlosProperties.getInstance().getProperty("BASE_DOCUMENT_DIR");
         CarlosProperties.getInstance().setProperty("BASE_DOCUMENT_DIR", tempDir.toString());
+        // resolveDocumentCacheDirectory creates only the leaf, so the context directory must exist.
+        Files.createDirectories(tempDir.resolve("carlos"));
 
         nioFileManager = new NioFileManagerImpl();
         SecurityInfoManager securityInfoManager = mock(SecurityInfoManager.class);
@@ -118,16 +123,50 @@ class NioFileManagerImplFilenameValidationUnitTest extends CarlosUnitTestBase {
 
     @ParameterizedTest
     @ValueSource(strings = {"../evil.png", "..\\evil.png", ".hidden.png", "sub/evil.png"})
-    @DisplayName("hasCacheVersion2 returns null for a path-like or hidden filename")
-    void shouldReturnNull_forInvalidCacheFilename(String filename) {
+    @DisplayName("hasCacheVersion2 returns null for a path-like or hidden filename even when a rewritten name is cached")
+    void shouldReturnNull_forInvalidCacheFilename(String filename) throws IOException {
+        // Seed a cache entry under every name a rewriting sanitizer could have produced, so a null
+        // result proves the name was refused rather than being an ordinary cache miss.
+        Path cacheDir = nioFileManager.resolveDocumentCacheDirectory();
+        for (String rewritten : List.of("evil.png", "hidden.png", ".hidden.png", "sub_evil.png", "invalid_filename")) {
+            Files.write(cacheDir.resolve(rewritten + "_1.png"), new byte[] {1});
+            Files.write(cacheDir.getParent().resolve(rewritten + "_1.png"), new byte[] {1});
+        }
+
         assertThat(nioFileManager.hasCacheVersion2(loggedInInfo, filename, 1)).isNull();
+    }
+
+    @Test
+    @DisplayName("hasCacheVersion2 control: a valid cached name is found (so the seeding above is meaningful)")
+    void shouldReturnCachedPath_forValidCacheFilename() throws IOException {
+        Path cacheDir = nioFileManager.resolveDocumentCacheDirectory();
+        Path cached = Files.write(cacheDir.resolve("evil.png_1.png"), new byte[] {1});
+
+        assertThat(nioFileManager.hasCacheVersion2(loggedInInfo, "evil.png", 1)).isEqualTo(cached.toRealPath());
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"../evil.pdf", "..\\evil.pdf", ".hidden.pdf", "sub/evil.pdf"})
-    @DisplayName("createCacheVersion2 returns null for a path-like or hidden source filename")
-    void shouldReturnNull_forInvalidSourceFilename(String filename) {
+    @DisplayName("createCacheVersion2 returns null for a path-like or hidden source filename even when a rewritten source exists")
+    void shouldReturnNull_forInvalidSourceFilename(String filename) throws IOException {
+        // Real PDFs exist under every name a rewriting sanitizer could have produced, so null proves
+        // the name was refused rather than the source simply being absent.
+        for (String rewritten : List.of("evil.pdf", "hidden.pdf", ".hidden.pdf", "sub_evil.pdf", "invalid_filename")) {
+            writeBlankPdf(tempDir.resolve(rewritten));
+        }
+
         assertThat(nioFileManager.createCacheVersion2(loggedInInfo, tempDir.toString(), filename, 1)).isNull();
+        try (java.util.stream.Stream<Path> cached = Files.list(nioFileManager.resolveDocumentCacheDirectory())) {
+            assertThat(cached.toList()).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("createCacheVersion2 control: a valid source renders (so the seeded PDFs above are reachable)")
+    void shouldRenderPreview_forValidSourceFilename() throws IOException {
+        writeBlankPdf(tempDir.resolve("evil.pdf"));
+
+        assertThat(nioFileManager.createCacheVersion2(loggedInInfo, tempDir.toString(), "evil.pdf", 1)).isNotNull();
     }
 
     // ---- open/remove paths fail loudly for invalid names ----
@@ -187,28 +226,32 @@ class NioFileManagerImplFilenameValidationUnitTest extends CarlosUnitTestBase {
     @DisplayName("saveTempFile throws and leaves no temp directory behind when the name cleans to empty")
     void shouldThrow_whenTempFilenameCleansToEmpty(String filename) throws IOException {
         // The rejected-name validation must happen before the temp directory is created, so a
-        // failure leaves nothing behind (issue #2213 review). Assert the tempPDF* directory count is
-        // unchanged across the failed call.
-        long before = countTempPdfDirectories();
+        // failure leaves nothing behind (issue #2213 review). Point java.io.tmpdir at a per-test
+        // directory so the assertion cannot race other tests or forks writing tempPDF* directories
+        // into the shared system temp root. applicationTempParent() reads the property on every call.
+        Path isolatedTmp = Files.createDirectory(tempDir.resolve("isolated-tmp"));
+        String originalTmpDir = System.getProperty("java.io.tmpdir");
+        System.setProperty("java.io.tmpdir", isolatedTmp.toString());
         try (ByteArrayOutputStream os = new ByteArrayOutputStream()) {
             os.write("hi".getBytes(StandardCharsets.UTF_8));
             assertThatThrownBy(() -> nioFileManager.saveTempFile(filename, os, "pdf"))
                     .isInstanceOf(SecurityException.class);
+
+            Path applicationParent = isolatedTmp.resolve(PathValidationUtils.APPLICATION_TEMP_ROOT_NAME);
+            if (Files.isDirectory(applicationParent)) {
+                try (java.util.stream.Stream<Path> entries = Files.list(applicationParent)) {
+                    assertThat(entries.toList()).isEmpty();
+                }
+            }
+        } finally {
+            System.setProperty("java.io.tmpdir", originalTmpDir);
         }
-        assertThat(countTempPdfDirectories()).isEqualTo(before);
     }
 
-    /** Counts leftover {@code tempPDF*} directories under the application temp root. */
-    private long countTempPdfDirectories() throws IOException {
-        Path applicationParent = Path.of(System.getProperty("java.io.tmpdir"),
-                PathValidationUtils.APPLICATION_TEMP_ROOT_NAME);
-        if (!Files.isDirectory(applicationParent)) {
-            return 0;
-        }
-        try (java.util.stream.Stream<Path> entries = Files.list(applicationParent)) {
-            return entries.filter(Files::isDirectory)
-                    .filter(p -> p.getFileName().toString().startsWith("tempPDF"))
-                    .count();
+    private static void writeBlankPdf(Path target) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            document.addPage(new PDPage());
+            document.save(target.toFile());
         }
     }
 
