@@ -15,8 +15,8 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
 public class LocalSMTPEmailSender extends SMTPEmailSender {
 
-    public LocalSMTPEmailSender(LoggedInInfo loggedInInfo, EmailConfig emailConfig, 
-                                String[] recipients, String subject, String body, 
+    public LocalSMTPEmailSender(LoggedInInfo loggedInInfo, EmailConfig emailConfig,
+                                String[] recipients, String subject, String body,
                                 List<EmailAttachment> attachments) {
         super(loggedInInfo, emailConfig, recipients, subject, body, attachments);
     }
@@ -25,8 +25,8 @@ public class LocalSMTPEmailSender extends SMTPEmailSender {
     protected JavaMailSender createTLSMailSender(EmailConfig emailConfig) throws EmailSendingException {
         JavaMailSenderImpl mailSender = new JavaMailSenderImpl();
         JsonNode jsonNode = parseConfig(emailConfig);
-        String host = requiredText(jsonNode, "host", emailConfig);
-        String port = requiredText(jsonNode, "port", emailConfig);
+        String host = requiredText(jsonNode, "host", emailConfig).trim();
+        String port = requiredText(jsonNode, "port", emailConfig).trim();
 
         // SECURITY: Only allow localhost variations
         if (!isLocalhost(host)) {
@@ -34,11 +34,7 @@ public class LocalSMTPEmailSender extends SMTPEmailSender {
         }
 
         mailSender.setHost(host);
-        try {
-            mailSender.setPort(Integer.parseInt(port));
-        } catch (NumberFormatException e) {
-            throw invalidConfiguration(emailConfig);
-        }
+        mailSender.setPort(parsePort(port, invalidConfiguration(emailConfig).getMessage()));
 
         // LOCAL provider - no authentication needed. Username is optional; its password is not
         // read, decrypted, or copied into the JavaMail sender when this provider cannot use it.
@@ -53,6 +49,8 @@ public class LocalSMTPEmailSender extends SMTPEmailSender {
         properties.put("mail.smtp.starttls.required", "false");
         properties.put("mail.debug", "false");
 
+        applySmtpTimeouts(properties);
+        applyAllOrNothingRecipients(properties);
         mailSender.setJavaMailProperties(properties);
         return mailSender;
     }
@@ -60,8 +58,8 @@ public class LocalSMTPEmailSender extends SMTPEmailSender {
     // FindSecBugs IMPROPER_UNICODE: case-insensitive comparison of an internal/domain value (status/flag/enum/MIME/code); not a security or authorization decision. See docs/static-analysis-workflows.md
     @SuppressFBWarnings(value = "IMPROPER_UNICODE", justification = "case-insensitive comparison of an internal/domain value (status/flag/enum/MIME/code); not a security or authorization decision")
     private boolean isLocalhost(String host) {
-        return "localhost".equalsIgnoreCase(host) || 
-            "127.0.0.1".equals(host) || 
+        return "localhost".equalsIgnoreCase(host) ||
+            "127.0.0.1".equals(host) ||
             "::1".equals(host);
     }
 }

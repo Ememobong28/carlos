@@ -22,7 +22,12 @@
 package io.github.carlos_emr.carlos.webserv;
 
 import java.util.Collections;
+import java.util.List;
 
+import org.apache.cxf.Bus;
+import org.apache.cxf.bus.CXFBusFactory;
+import org.apache.cxf.jaxws.support.JaxWsServiceFactoryBean;
+import org.apache.cxf.service.Service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -33,14 +38,19 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import io.github.carlos_emr.carlos.commn.model.Demographic;
 import io.github.carlos_emr.carlos.managers.DemographicManager;
+import io.github.carlos_emr.carlos.managers.SecurityInfoManager;
 import io.github.carlos_emr.carlos.test.unit.CarlosUnitTestBase;
 import io.github.carlos_emr.carlos.utility.LoggedInInfo;
 import io.github.carlos_emr.carlos.webserv.transfer_objects.DemographicTransfer;
 import io.github.carlos_emr.carlos.webserv.transfer_objects.DemographicTransfer2;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -68,6 +78,15 @@ class DemographicSoapContractUnitTest extends CarlosUnitTestBase {
     @Mock
     private DemographicManager demographicManager;
 
+    /**
+     * These are delegation-contract tests, not RBAC tests, so the gate is stubbed open. The
+     * privilege enforcement itself -- including the per-patient search filter, which returns an
+     * empty list rather than throwing when a patient is unreadable -- is covered by
+     * {@code AbstractWsPrivilegeUnitTest}.
+     */
+    @Mock
+    private SecurityInfoManager securityInfoManager;
+
     private LoggedInInfo loggedInInfo;
     private DemographicWs service;
 
@@ -81,6 +100,10 @@ class DemographicSoapContractUnitTest extends CarlosUnitTestBase {
             }
         };
         injectDependency(service, "demographicManager", demographicManager);
+        registerMock(SecurityInfoManager.class, securityInfoManager);
+        lenient().when(securityInfoManager.hasPrivilege(
+                        any(LoggedInInfo.class), anyString(), anyString(), nullable(String.class)))
+                .thenReturn(true);
     }
 
     @Test
@@ -138,5 +161,30 @@ class DemographicSoapContractUnitTest extends CarlosUnitTestBase {
         verify(demographicManager).searchDemographicsByAttributes(eq(loggedInInfo), eq("9999999999"),
                 isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), isNull(),
                 eq("patient@example.test"), isNull(), eq(0), eq(25));
+    }
+
+    @Test
+    @DisplayName("should not publish getConsentedDemographicIdsAfter when CXF builds the DemographicService")
+    void shouldNotPublishConsentedDemographicIdsOperation_whenCxfBuildsTheService() {
+        // Builds the same service model the jaxws:endpoint publishes, so the assertion is about the
+        // WSDL operations a caller can reach, not about which Java methods exist.
+        Bus bus = new CXFBusFactory().createBus();
+        try {
+            JaxWsServiceFactoryBean factory = new JaxWsServiceFactoryBean();
+            factory.setBus(bus);
+            factory.setServiceClass(DemographicWs.class);
+            Service publishedService = factory.create();
+            List<String> operations = publishedService.getServiceInfos().get(0).getInterface().getOperations()
+                    .stream()
+                    .map(operation -> operation.getName().getLocalPart())
+                    .toList();
+
+            assertThat(operations)
+                    .as("operations published by DemographicService")
+                    .contains("getDemographic", "getAdmittedDemographicIdsByProgramProvider")
+                    .doesNotContain("getConsentedDemographicIdsAfter");
+        } finally {
+            bus.shutdown(true);
+        }
     }
 }

@@ -19,11 +19,32 @@
 <%@ taglib uri="owasp.encoder.jakarta.advanced" prefix="e" %>
 <%@ taglib uri="carlos" prefix="carlos" %>
 <fmt:setBundle basename="oscarResources"/>
+<%@ page import="io.github.carlos_emr.carlos.integration.patientportal.PortalEmailDeliveryService" %>
+<%@ page import="io.github.carlos_emr.carlos.integration.patientportal.PatientPortalConfigurationException" %>
+<%
+    // A malformed setting must not break unencrypted email. Treat it as portal delivery so no
+    // manual password is collected; the send path refuses encrypted email until it is fixed.
+    boolean portalEmailMisconfigured = false;
+    boolean portalEmailEnabled;
+    try {
+        portalEmailEnabled = PortalEmailDeliveryService.isEnabled();
+    } catch (PatientPortalConfigurationException malformed) {
+        portalEmailEnabled = true;
+        portalEmailMisconfigured = true;
+    }
+    request.setAttribute("portalEmailEnabled", portalEmailEnabled);
+    request.setAttribute("portalEmailMisconfigured", portalEmailMisconfigured);
+%>
+<c:set var="portalDeliveryNeedsRecovery" value="${not empty emailLog and emailLog.portalDeliveryUnresolved}"/>
+
 
 <html>
 <head>
     <link rel="icon" href="${pageContext.request.contextPath}/images/favicon.ico"/>
     <fmt:message key="email.compose.title" var="emailComposeTitle"/>
+    <fmt:message key="email.compose.msg.sentTo" var="emailComposeSentTo"/>
+    <fmt:message key="email.compose.msg.acceptedForDelivery" var="emailComposeAcceptedForDelivery"/>
+    <fmt:message key="email.compose.msg.acceptedNotDelivered" var="emailComposeAcceptedNotDelivered"/>
     <fmt:message key="email.compose.label.sender" var="emailComposeSenderLabel"/>
     <fmt:message key="email.compose.label.patient" var="emailComposePatientLabel"/>
     <fmt:message key="email.compose.placeholder.searchPatient" var="emailComposeSearchPatientPlaceholder"/>
@@ -65,6 +86,7 @@
     <fmt:message key="email.compose.btn.close" var="emailComposeClose"/>
     <fmt:message key="email.compose.msg.subjectRequired" var="emailComposeSubjectRequired"/>
     <fmt:message key="email.compose.msg.messageRequired" var="emailComposeMessageRequired"/>
+    <fmt:message key="email.compose.portal.misconfigured" var="emailComposePortalMisconfigured"/>
     <fmt:message key="email.compose.msg.passwordRequired" var="emailComposePasswordRequired"/>
     <fmt:message key="email.compose.msg.clueRequired" var="emailComposeClueRequired"/>
     <fmt:message key="email.compose.msg.passwordMinLength" var="emailComposePasswordMinLength"/>
@@ -77,6 +99,9 @@
     </c:if>
     <fmt:message key="email.compose.state.on" var="emailComposeStateOn"/>
     <fmt:message key="email.compose.state.off" var="emailComposeStateOff"/>
+    <fmt:message key="email.compose.msg.pendingResendWarning" var="emailComposePendingResendWarning"/>
+    <fmt:message key="email.compose.msg.statusTrackingFailed" var="emailComposeStatusTrackingFailed"/>
+    <fmt:message key="email.compose.msg.deliveryUnconfirmed" var="emailComposeDeliveryUnconfirmed"/>
 
     <title>${emailComposeTitle}</title>
 
@@ -95,7 +120,7 @@
         Action return flashy confirmation messages.
     --%>
     <%-- Keep failed sends editable for retry; only a successful send collapses the composer. --%>
-    <c:if test="${ isEmailSuccessful eq true }">
+    <c:if test="${ isEmailSuccessful eq true or isEmailDeliveryUnconfirmed eq true or portalDeliveryNeedsRecovery }">
         <script type="text/javascript">
             $(document).ready(function () {
                 $("#page-body").slideUp("slow");
@@ -249,6 +274,15 @@
 
         <div id="page-body">
 
+            <c:if test="${isPendingEmailResend}">
+                <div class="alert alert-warning" id="emailResendWarning" role="alert">
+                    <span class="fa-solid fa-triangle-exclamation" aria-hidden="true"></span>
+                    ${carlos:forHtml(emailComposePendingResendWarning)}
+                </div>
+                <input type="hidden" id="emailResendWarningMessage"
+                       value="${carlos:forHtmlAttribute(emailComposePendingResendWarning)}"/>
+            </c:if>
+
             <c:choose>
                 <c:when test="${transactionType eq 'EFORM'}">
                     <c:set var="emailSendAction" value="${ctx}/email/emailSendAction?method=sendEFormEmail"/>
@@ -258,9 +292,15 @@
                 </c:when>
             </c:choose>
 
-            <input type="hidden" name="isEmailError" id="isEmailError" value="${carlos:forHtmlAttribute(isEmailError)}"/>
-            <input type="hidden" name="emailErrorMessage" id="emailErrorMessage" value="${carlos:forHtmlAttribute(emailErrorMessage)}"/>
-            <input type="hidden" name="isEmailSuccessful" id="isEmailSuccessful" value="${carlos:forHtmlAttribute(isEmailSuccessful)}"/>
+            <input type="hidden" name="isEmailError" id="isEmailError"
+                   value="${carlos:forHtmlAttribute(isEmailError)}"/>
+            <input type="hidden" name="isEmailComposeStateError" id="isEmailComposeStateError"
+                   value="${carlos:forHtmlAttribute(isEmailComposeStateError)}"/>
+            <input type="hidden" name="emailErrorMessage" id="emailErrorMessage"
+                   value="${carlos:forHtmlAttribute(emailErrorMessage)}"/>
+            <input type="hidden" name="isEmailSuccessful" id="isEmailSuccessful"
+                   value="${carlos:forHtmlAttribute(isEmailSuccessful)}"/>
+            <input type="hidden" name="isEmailStatusRecorded" id="isEmailStatusRecorded" value="${carlos:forHtmlAttribute(isEmailStatusRecorded)}"/>
             <input type="hidden" name="emailPatientChartOption" id="emailPatientChartOption"
                    value="${carlos:forHtmlAttribute(empty param.emailPatientChartOption ? emailPatientChartOption : param.emailPatientChartOption)}"/>
             <input type="hidden" name="totalSenderEmails" id="totalSenderEmails" value="${fn:length(senderAccounts)}"/>
@@ -268,15 +308,25 @@
                    value="${fn:length(receiverEmailList)}"/>
             <input type="hidden" name="totalInvalidRecipintEmails" id="totalInvalidRecipintEmails"
                    value="${fn:length(invalidReceiverEmailList)}"/>
+            <c:if test="${isEmailComposeStateError}">
+                <div class="alert alert-danger mt-3" role="alert">
+                    ${carlos:forHtmlContent(emailErrorMessage)}
+                </div>
+            </c:if>
 
             <form id="emailComposeForm" class="email-compose-form" action="${carlos:forHtmlAttribute(emailSendAction)}" method="post"
                   onsubmit="return validateEmailForm()" novalidate>
                 <input type="hidden" name="demographicId" value="${carlos:forHtmlAttribute(demographicId)}"/>
                 <input type="hidden" name="fdid" value="${carlos:forHtmlAttribute(fdid)}"/>
                 <input type="hidden" name="fid" id="fid" value="${carlos:forHtmlAttribute(fid)}"/>
-                <input type="hidden" name="openEFormAfterEmail" value="${carlos:forHtmlAttribute(openEFormAfterEmail)}"/>
-                <input type="hidden" name="deleteEFormAfterEmail" value="${carlos:forHtmlAttribute(deleteEFormAfterEmail)}"/>
-                <input type="hidden" name="transactionType" id="transactionType" value="${carlos:forHtmlAttribute(transactionType)}"/>
+                <input type="hidden" name="openEFormAfterEmail"
+                       value="${carlos:forHtmlAttribute(openEFormAfterEmail)}"/>
+                <input type="hidden" name="deleteEFormAfterEmail"
+                       value="${carlos:forHtmlAttribute(deleteEFormAfterEmail)}"/>
+                <input type="hidden" name="transactionType" id="transactionType"
+                       value="${carlos:forHtmlAttribute(transactionType)}"/>
+                <input type="hidden" name="emailPDFPasswordToken"
+                       value="${carlos:forHtmlAttribute(emailPDFPasswordToken)}"/>
 
                 <%-- To and From sit side by side: recipient (To) first/leftmost, sender (From) on the right.
                      Equal-height cards keep the row tidy when the To card grows with extra recipients. --%>
@@ -488,31 +538,38 @@
                         <span class="fa-solid fa-triangle-exclamation me-2"></span> ${emailComposeEncryptionDisabledWarning}
                     </div>
                     <div class="card-body" id="encryptionOptions">
+                        <c:if test="${portalEmailMisconfigured}">
+                            <div class="alert alert-danger" role="alert"><fmt:message key="email.compose.portal.misconfigured"/></div>
+                        </c:if>
+                        <c:if test="${portalEmailEnabled and not portalEmailMisconfigured}">
+                            <p><fmt:message key="email.compose.portal.notice"/></p>
+                        </c:if>
                         <div class="container">
                             <%-- The message content itself now lives in the single "Message" field above;
                                  this card only carries the password / clue / encrypt-attachments controls
                                  that govern how that message (and any attachments) are protected. --%>
-                            <div class="row mt-3 mb-3 align-items-center">
+                            <div class="row mt-3 mb-3 align-items-center ${portalEmailEnabled ? 'd-none' : ''}">
                                 <div class="col-sm-3">
                                     <label class="col-form-label" for="emailPDFPassword">${emailComposePasswordLabel}</label>
                                 </div>
                                 <div class="col-sm-9">
-                                    <input class="form-control" type="text" name="emailPDFPassword"
+                                    <input class="form-control" type="text"
                                            id="emailPDFPassword" placeholder="${emailComposePasswordPlaceholder}"
-                                           value="${carlos:forHtmlAttribute(not empty param.passwordEmail ? param.passwordEmail : emailPDFPassword)}"
-                                           autocomplete="off"/>
+                                           value="${carlos:forHtmlAttribute(portalEmailEnabled ? '' : emailPDFPassword)}"
+                                           autocomplete="off" spellcheck="false" autocapitalize="none"
+                                           autocorrect="off" readonly/>
                                     <div class="error-message" id="emailPDFPasswordError"></div>
                                 </div>
                             </div>
-                            <div class="row mt-3 mb-3 align-items-center">
+                            <div class="row mt-3 mb-3 align-items-center ${portalEmailEnabled ? 'd-none' : ''}">
                                 <div class="col-sm-3">
                                     <label class="col-form-label" for="emailPDFPasswordClue">${emailComposeClueLabel} <span id="clueInfo" class="fa-solid fa-circle-info" data-bs-toggle="tooltip"
                                                       data-bs-placement="right"
                                                       title="${emailComposeClueTooltip}"></span></label>
                                 </div>
                                 <div class="col-sm-9">
-                                    <textarea class="form-control" name="emailPDFPasswordClue" id="emailPDFPasswordClue"
-                                              rows="2" placeholder="${emailComposeCluePlaceholder}">${carlos:forHtml(not empty param.passwordClueEmail ? param.passwordClueEmail : emailPDFPasswordClue)}</textarea>
+                                    <textarea class="form-control" id="emailPDFPasswordClue"
+                                              rows="2" placeholder="${emailComposeCluePlaceholder}" readonly>${carlos:forHtmlContent(portalEmailEnabled ? '' : emailPDFPasswordClue)}</textarea>
                                     <div class="error-message" id="emailPDFPasswordClueError"></div>
                                 </div>
                             </div>
@@ -620,12 +677,26 @@
                                                  aria-labelledby="emailAttachmentHeader${loop.count}"
                                                  data-bs-parent="#emailAttachmentList">
                                                 <div class="accordion-body">
-                                                    <object id="emailAttachmentPDF${loop.count}"
-                                                            data="${ctx}/previewDocs?method=renderPDF&amp;previewToken=${emailAttachment.previewToken}"
-                                                            type="application/pdf" width="100%" height="500">
-                                                        <%-- Accessible fallback shown when the browser cannot render the inline PDF preview. --%>
-                                                        <p class="text-muted mb-0">${carlos:forHtml(emailAttachment.fileName)}</p>
-                                                    </object>
+                                                    <%-- iframe, not <object>: the packaged CSP sets object-src 'none',
+                                                         which silently blanks an <object>-based PDF preview. --%>
+                                                    <%-- The title carries the filename: this loop renders one frame per
+                                                         attachment, and a shared title makes them indistinguishable in a
+                                                         screen reader's frame list. --%>
+                                                    <iframe id="emailAttachmentPDF${loop.count}"
+                                                            title="Attachment preview: ${carlos:forHtmlAttribute(emailAttachment.fileName)}"
+                                                            src="${carlos:forHtmlAttribute(ctx)}/previewDocs?method=renderPDF&amp;previewToken=${carlos:forHtmlAttribute(carlos:forUriComponent(emailAttachment.previewToken))}"
+                                                            style="width: 100%; height: 500px; border: 0;"></iframe>
+                                                    <%-- Outside the iframe on purpose. Unlike <object>, which this preview
+                                                         used to be, an iframe's child markup is ignored by every browser
+                                                         that supports iframes — so a fallback nested inside it can never
+                                                         be reached. A sibling link to the same URL is reachable whether
+                                                         or not the inline PDF renders. --%>
+                                                    <p class="text-muted mb-0 mt-1">
+                                                        <a href="${carlos:forHtmlAttribute(ctx)}/previewDocs?method=renderPDF&amp;previewToken=${carlos:forHtmlAttribute(carlos:forUriComponent(emailAttachment.previewToken))}"
+                                                           target="_blank" rel="noopener">
+                                                            ${carlos:forHtml(emailAttachment.fileName)}
+                                                        </a>
+                                                    </p>
                                                 </div>
                                             </div>
                                         </div>
@@ -652,10 +723,13 @@
                     </div>
                 </div>
 
+                <div id="emailCancelError" class="alert alert-danger d-none" role="alert">
+                    <fmt:message key="email.compose.msg.cancelFailed"/>
+                </div>
                 <div class="container mt-4" id="form-control-buttons">
                     <div class="row">
                         <div class="col-sm-12">
-                            <button type="submit" id="btnSend" class="btn btn-primary btn-md float-end" value="${emailComposeSend}">
+                            <button type="submit" ${isEmailSuccessful or isEmailDeliveryUnconfirmed or portalDeliveryNeedsRecovery ? 'disabled' : ''} id="btnSend" class="btn btn-primary btn-md float-end" value="${emailComposeSend}">
                                 <span class="btn-label"><i class="fa-solid fa-location-arrow"></i></span>
                                 ${emailComposeSend}
                             </button>
@@ -674,11 +748,38 @@
         <%-- the confirmation tags. --%>
         <c:if test="${ not empty isEmailSuccessful }">
             <c:choose>
-                <c:when test="${ emailLog.status eq 'SUCCESS' }">
-				<div class="alert alert-success" role="alert" id="successMessage">
-					<p><fmt:message key="email.compose.msg.sentTo"/> <b>${carlos:forHtml(fn:join(emailLog.toEmail, ', '))}</b> <fmt:message key="email.compose.msg.successfullySent"/></p>
+                <c:when test="${portalDeliveryNeedsRecovery}">
+                    <div class="alert alert-warning" role="alert">
+                        <p><fmt:message key="email.compose.portal.needsRecovery"/></p>
+                        <a href="${carlos:forHtmlAttribute(ctx)}/email/portalDelivery?emailLogId=${carlos:forUriComponent(emailLog.id)}"><fmt:message key="email.compose.portal.checkDelivery"/></a>
                     </div>
-				<p class="mt-1" id="windowCloseMessage">${emailComposeWindowClosing}</p>
+                </c:when>
+                <c:when test="${ isEmailSuccessful }">
+					<div class="alert alert-success" role="alert" id="successMessage">
+						<p>${carlos:forHtml(emailComposeSentTo)} <b>${carlos:forHtml(fn:join(emailLog.toEmail, ', '))}</b> ${carlos:forHtml(emailComposeAcceptedForDelivery)}</p>
+						<%-- CARLOS observes the transport handing off, nothing beyond it: a provider can --%>
+						<%-- still bounce or discard the message afterwards without telling us. Saying    --%>
+						<%-- "sent" alone invites a clinician to treat unread lab results as received.    --%>
+						<p class="small text-muted mb-0" id="acceptedNotDeliveredNotice">${carlos:forHtml(emailComposeAcceptedNotDelivered)}</p>
+                    </div>
+					<c:if test="${not isEmailStatusRecorded}">
+						<div class="alert alert-warning" role="alert" id="statusTrackingWarning">
+							${carlos:forHtml(emailComposeStatusTrackingFailed)}
+						</div>
+					</c:if>
+                    <c:if test="${isEmailFollowUpRequired}">
+                        <div class="alert alert-warning" role="alert" id="emailFollowUpWarning">
+                            <fmt:message key="email.compose.msg.followUpRequired"/>
+                        </div>
+                    </c:if>
+                    <c:if test="${isEmailStatusRecorded and not isEmailFollowUpRequired}">
+                        <p class="mt-1" id="windowCloseMessage">${emailComposeWindowClosing}</p>
+                    </c:if>
+                </c:when>
+                <c:when test="${ isEmailDeliveryUnconfirmed }">
+                    <div class="alert alert-warning" role="alert" id="deliveryUnconfirmedWarning">
+                        ${carlos:forHtml(emailComposeDeliveryUnconfirmed)}
+                    </div>
                 </c:when>
                 <c:otherwise>
                     <div class="alert alert-danger" role="alert">
@@ -686,6 +787,16 @@
                             <fmt:message key="email.compose.msg.reviewErrorAndTryAgain"/><br><br>
                             <b><fmt:message key="email.compose.msg.errorMessage"/></b> <br>
                             ${carlos:forHtml(emailLog.errorMessage)}</p>
+                        <%-- Set only when the transport proved the server refused an address, so --%>
+                        <%-- the sender knows whether to fix the patient's address or call an admin. --%>
+                        <c:choose>
+                            <c:when test="${emailRefusal eq 'RECIPIENT'}">
+                                <p class="mb-0" id="recipientRefusedHint"><fmt:message key="email.compose.msg.recipientRefusedHint"/></p>
+                            </c:when>
+                            <c:when test="${emailRefusal eq 'SENDER'}">
+                                <p class="mb-0" id="senderRefusedHint"><fmt:message key="email.compose.msg.senderRefusedHint"/></p>
+                            </c:when>
+                        </c:choose>
                     </div>
                 </c:otherwise>
             </c:choose>
@@ -720,6 +831,13 @@
 
         // Check if any error
         if (document.getElementById('isEmailError').value === 'true') {
+            if (document.getElementById('isEmailComposeStateError').value === 'true') {
+                convertAttachmentSize();
+                selectPatientChartOption();
+                toggleInternalTextArea();
+                disableForm();
+                return;
+            }
             // Open EForm again on sent
             showErrorAndClose();
             return;
@@ -727,11 +845,26 @@
 
         // A successful send is terminal for this composer. A failed send deliberately continues
         // through normal initialization below so the fully restored form remains usable for retry.
+        const portalDeliveryNeedsRecovery = ${portalDeliveryNeedsRecovery};
         if (document.getElementById('isEmailSuccessful').value === 'true') {
+            // The email was delivered even when its portal password still needs attention, so
+            // the eForm steps still run; only the auto-close waits for the recovery link.
             openEFormAfterSend();
-            setTimeout(() => {
-                window.close();
-            }, 3000);
+
+            if (document.getElementById('isEmailStatusRecorded').value === 'true'
+                    && !document.getElementById('emailFollowUpWarning')
+                    && !portalDeliveryNeedsRecovery) {
+                // Long enough to read the acceptedNotDeliveredNotice caveat. At 3 seconds the
+                // window closed before anyone could, which made the notice decorative.
+                setTimeout(() => window.close(), 8000);
+            }
+            return;
+        }
+        if (portalDeliveryNeedsRecovery) {
+            return; // Recovery never resends the email.
+        }
+
+        if (document.getElementById('deliveryUnconfirmedWarning')) {
             return;
         }
 
@@ -763,6 +896,7 @@
 
     const emailComposeSubjectRequiredMsg = "<carlos:encode value='${emailComposeSubjectRequired}' context="javaScript"/>";
     const emailComposeMessageRequiredMsg = "<carlos:encode value='${emailComposeMessageRequired}' context="javaScript"/>";
+    const emailComposePortalMisconfiguredMsg = "<carlos:encode value='${emailComposePortalMisconfigured}' context="javaScript"/>";
     const emailComposePasswordRequiredMsg = "<carlos:encode value='${emailComposePasswordRequired}' context="javaScript"/>";
     const emailComposeClueRequiredMsg = "<carlos:encode value='${emailComposeClueRequired}' context="javaScript"/>";
     const emailComposePasswordMinLengthMsg = "<carlos:encode value='${emailComposePasswordMinLength}' context="javaScript"/>";
@@ -773,6 +907,10 @@
 
     function validateEmailForm() {
         if (!validateForm()) {
+            return false;
+        }
+        const resendWarning = document.getElementById('emailResendWarningMessage');
+        if (resendWarning && !window.confirm(resendWarning.value)) {
             return false;
         }
         ShowSpin(true);
@@ -801,17 +939,20 @@
 
         validateField(subjectEmail, emailComposeSubjectRequiredMsg, errors, 'subjectError');
         validateField(message, emailComposeMessageRequiredMsg, errors, 'messageError');
-        // When encryption is on the message is rendered into the password-protected PDF, so a
-        // password/clue is required whenever there is a message to encrypt (there always is, since
-        // the message field is mandatory) or encrypted attachments are being sent.
-        if (isEncrypted) {
-            if (hasMessage || (hasAttachments && isAttachmentEncrypted)) {
-                validateField(emailPDFPassword, emailComposePasswordRequiredMsg, errors, 'emailPDFPasswordError');
-                validateField(emailPDFPasswordClue, emailComposeClueRequiredMsg, errors, 'emailPDFPasswordClueError');
-            } else {
-                clearError('emailPDFPasswordError');
-                clearError('emailPDFPasswordClueError');
-            }
+        const needsPdfPassword = !${portalEmailEnabled} && (isEncrypted || (hasAttachments && isAttachmentEncrypted));
+        if (needsPdfPassword) {
+            validateField(emailPDFPassword, emailComposePasswordRequiredMsg, errors, 'emailPDFPasswordError');
+            validateField(emailPDFPasswordClue, emailComposeClueRequiredMsg, errors, 'emailPDFPasswordClueError');
+        } else {
+            clearError('emailPDFPasswordError');
+            clearError('emailPDFPasswordClueError');
+        }
+        // A malformed portal setting refuses encrypted email on the server. Stop it here instead, so
+        // staff stay on this draft and can turn encryption off rather than land on a bare error page.
+        const portalEmailMisconfigured = ${portalEmailMisconfigured};
+        if (portalEmailMisconfigured && (isEncrypted || (hasAttachments && isAttachmentEncrypted))) {
+            errors.portalEmailMisconfigured = emailComposePortalMisconfiguredMsg;
+            displayError('messageError', emailComposePortalMisconfiguredMsg, message);
         }
         if (consentOverride && consentOverride.checked) {
             validateField(consentOverrideReason, emailComposeConsentOverrideReasonRequiredMsg, errors, 'consentOverrideReasonError');
@@ -827,13 +968,14 @@
 
     function validateField(field, errorMessage, errors, errorElementId) {
         clearError(errorElementId, field);
+        const errorKey = field.name || field.id;
 
         if (field.value.trim() === '') {
-            errors[field.name] = errorMessage;
+            errors[errorKey] = errorMessage;
             displayError(errorElementId, errorMessage, field);
         } else if (field.value.trim().length < 5 && field.id === 'emailPDFPassword') {
             errorMessage = emailComposePasswordMinLengthMsg;
-            errors[field.name] = errorMessage;
+            errors[errorKey] = errorMessage;
             displayError(errorElementId, errorMessage, field);
         }
     }
@@ -870,6 +1012,11 @@
         document.getElementById("isEncryption").innerHTML = checkbox.checked ? emailComposeStateOnMsg : emailComposeStateOffMsg;
         document.getElementById("isEncryption").classList.toggle("off", !checkbox.checked);
         document.getElementById("encryptionDisabledWarning").classList.toggle('d-none', checkbox.checked);
+        if (!checkbox.checked) {
+            const encryptAttachmentSwitch = document.getElementById("encryptAttachmentSwitch");
+            encryptAttachmentSwitch.checked = false;
+            document.getElementById("isEmailAttachmentEncrypted").value = "false";
+        }
         document.getElementById("messageEncryptedNotice").classList.toggle('d-none', !checkbox.checked);
     }
 
@@ -922,8 +1069,7 @@
     function autoSendEmail() {
         const emailComposeForm = document.getElementById('emailComposeForm');
         const isAutoSend = "${carlos:forJavaScript(isEmailAutoSend)}" === "true";
-        if (isAutoSend && validateForm()) {
-            ShowSpin(true);
+        if (isAutoSend && !document.getElementById('emailResendWarningMessage') && validateEmailForm()) {
             emailComposeForm.submit();
         }
     }
@@ -982,8 +1128,10 @@
 
     function disableForm() {
         const emailComposeFormFields = document.getElementById("emailComposeForm").getElementsByTagName('*');
+        // Disabled controls are omitted from submission; Cancel still needs routing and cleanup state.
+        const cancelFieldNames = new Set(["close", "transactionType", "fdid", "emailPDFPasswordToken", "CSRF-TOKEN"]);
         for (let i = 0; i < emailComposeFormFields.length; i++) {
-            if (emailComposeFormFields[i].name === "close") {
+            if (cancelFieldNames.has(emailComposeFormFields[i].name)) {
                 continue;
             }
             emailComposeFormFields[i].disabled = true;
@@ -995,20 +1143,41 @@
         window.open("${carlos:forJavaScript(ctx)}/demographic/DemographicEdit?demographic_no=${carlos:forJavaScript(carlos:forUriComponent(demographicId))}", "_blank", "width=1027,height=700");
     }
 
-    function cancelEmail() {
-        const transactionType = document.getElementById("transactionType").value;
-        if (transactionType === 'DIRECT') {
-            window.close();
-        }
+    async function cancelEmail() {
         const emailComposeForm = document.getElementById("emailComposeForm");
-        emailComposeForm.action = "${carlos:forJavaScript(ctx)}/email/emailSendAction?method=cancel";
-        emailComposeForm.submit();
+        const cancelUrl = "${carlos:forJavaScript(ctx)}/email/emailSendAction?method=cancel";
+        if (document.getElementById("transactionType").value !== 'DIRECT') {
+            emailComposeForm.action = cancelUrl;
+            emailComposeForm.submit();
+            return;
+        }
+        const cancelButton = document.getElementById("btnCancel");
+        const cancelError = document.getElementById("emailCancelError");
+        cancelButton.disabled = true;
+        cancelError.classList.add('d-none');
+        try {
+            const response = await fetch(cancelUrl, {
+                method: 'POST',
+                credentials: 'same-origin',
+                // Preserve normal form encoding so CSRF filters can read the token before Struts.
+                body: new URLSearchParams(new FormData(emailComposeForm))
+            });
+            if (response.status !== 204) {
+                throw new Error('Cancellation was not acknowledged');
+            }
+            // Wait for server-side token/file cleanup before closing this browsing context.
+            window.close();
+        } catch (error) {
+            cancelError.classList.remove('d-none');
+        } finally {
+            cancelButton.disabled = false;
+        }
     }
 
     function showAdditionalParamOption() {
         const senderEmailAddress = document.getElementById('senderEmailAddress');
         const selectedSender = senderEmailAddress.options[senderEmailAddress.selectedIndex];
-        if (selectedSender === null) {
+        if (!selectedSender) {
             return;
         }
 

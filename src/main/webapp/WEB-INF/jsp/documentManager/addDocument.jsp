@@ -281,10 +281,6 @@
                 aria-expanded="false" aria-controls="addLinkDiv">
             <fmt:message key="dms.addDocument.AddLink"/>
         </button>
-        <button type="button" class="btn btn-secondary"
-                onclick="popup1(450, 600, '<%= request.getContextPath() %>/documentManager/ViewAddEditHtml?function=<carlos:encode value='<%= module %>' context="uriComponent"/>&functionid=<carlos:encode value='<%= moduleid %>' context="uriComponent"/>&mode=addHtml', 'addhtml')">
-            <fmt:message key="dms.addDocument.AddHTML"/>
-        </button>
     </div>
 
     <div id="addDocDiv" class="collapse card card-body bg-body-tertiary mb-1" data-bs-parent="#addDocAccordion">
@@ -496,7 +492,13 @@
             <div class="mb-3">
                 <label for="html"><fmt:message key="dms.addDocument.labelLink"/></label>
                 <div class="input-group">
-                    <input type="text" id="html" name="html" class="form-control"
+                    <%-- type="text" + inputmode="url" rather than type="url": a schemeless entry such as
+                         www.example.org is valid here (AddEditHtml2Action prepends https://), but the
+                         browser's type="url" validation would block it. The server-side scheme
+                         allowlist in DocumentLink is authoritative. --%>
+                    <input type="text" inputmode="url" autocomplete="url" id="html" name="html"
+                           placeholder="https://www.example.org"
+                           class="form-control<c:if test="${ linkhtmlerrors['urlinvalid'] != null || linkhtmlerrors['urlmissing'] != null }"> is-invalid</c:if>"
                            value="<carlos:encode value='<%= formdata.getHtml() %>' context="htmlAttribute"/>" onfocus="checkDefaultValue(this)">
                     <input type="hidden" name="mode" value="addLink">
                     <input class="btn btn-primary" type="submit" name="Submit"
